@@ -13,6 +13,7 @@ from discord.ui import Button, View
 import random
 import time
 import math
+import sqlite3
 
 intents = discord.Intents.default()
 intents.messages = True #only used for DMs
@@ -49,6 +50,28 @@ class DnDBot(commands.Bot):
             print("Running in production mode. Syncing globally.")
             synced = await self.tree.sync()
             print("Slash commands synced: " + str(len(synced)))
+        #TEMP: Convert CSV to SQLite Database (Once Code is finnised this will not be used)
+        csvFiles = ["characters", "charactersBK", "attacks", "spells"]
+        DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+        DBCursor = DBConnection.cursor()
+        startTime = time.time()
+        DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        TableCount = len(DBCursor.fetchall())
+        if not TableCount > 0:
+            for fileName in csvFiles:
+                with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = file.readlines()
+                #Get headers and create data tables
+                headers = fileLines.pop(0).strip().split(",") #First row is column names
+                columns = ", ".join(str(header+" TEXT") for header in headers)
+                DBCursor.execute("CREATE TABLE IF NOT EXISTS "+fileName+" ("+columns+")")
+                #Insert each row into the created table
+                for line in fileLines:
+                    row = line.strip().split(",")
+                    placeholders = ", ".join("?" for _ in row)
+                    DBCursor.execute(f"INSERT INTO {fileName} VALUES ({placeholders})", row)
+            DBConnection.commit()
+            print("["+str(time.time()-startTime)+"]DNDatabase Initalised from CSV Files.")
+        DBConnection.close()
         #Update autocomplete lists
         updateAutocompleteLists()
 
@@ -61,129 +84,144 @@ async def on_ready():
     print("Bot is online as " + str(client.user))
     await client.change_presence(activity=discord.Game(name="DND probably"))
 
-#Functions to read info from files
+#Functions to read info from files. Each Returns [releventDict, Found?(Bool)]
 def getCharacterInfo(character: str, BKFile: bool = False) -> tuple[dict, bool]:
-    characterFound = False
     characterDict = {}
-    fileName = "characters"
-    if BKFile: fileName = "charactersBK"
-    with open("Zed\\"+fileName+".csv") as characterFile:
-        for line in characterFile.readlines():
-            fields = line.split(",")
-            fields = [s.lower() for s in fields]
-            fields = [s.strip() for s in fields]
-            if fields[0].startswith(character):
-                characterDict = {"name": str(fields[0]),
-                                 "class": str(fields[1].split(" ")[0]),
-                                 "level": float(fields[1].split(" ")[1]),
-                                 "size": str(fields[2]),
-                                 "creatureType": str(fields[3]),
-                                 "race": str(fields[4]),
-                                 "stats": [int(mod) for mod in str(fields[5]).split("/")[:6]],
-                                 "statMods": [int(mod) for mod in str(fields[6]).split("/")[:6]],
-                                 "HPMax": int(str(fields[7]).split("/")[0]),
-                                 "HPTemp": int(str(fields[7]).split("/")[1]),
-                                 "HPCurrent": int(str(fields[7]).split("/")[2]),
-                                 "AC": int(fields[8]),
-                                 "speed": int(fields[9]),
-                                 "profBonus": int(fields[10]),
-                                 "proficiencies": str(fields[11]),
-                                 "savingThrows": str(fields[12] + "/").split("/")[:-1][:6],
-                                 "deathSaves": str(fields[13]),
-                                 "vulnerabilities": str(fields[14]).split("/")[0].split(" ")[:20],
-                                 "resistances": str(fields[14]).split("/")[1].split(" ")[:20],
-                                 "immunities": str(fields[14]).split("/")[2].split(" ")[:20],
-                                 "conditions": str(fields[15]).split(" ")}
-                characterFound = True
-                break
-    return(characterDict, characterFound)
+    #Query the database for that character (QueryResult)
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "SELECT * FROM characters WHERE LOWER(Name) = LOWER(?)"
+    DBCursor.execute(Query, (character,))
+    QueryResult = DBCursor.fetchone()
+    DBConnection.close()
+    #Convert the QueryResult into the characterDict
+    if QueryResult is None: return({}, False)
+    QueryResult = [str(Value).lower().strip() for Value in QueryResult]
+    characterDict = {"name": str(QueryResult[0]),
+                     "class": str(QueryResult[1].split(" ")[0]),
+                     "level": float(QueryResult[1].split(" ")[1]),
+                     "size": str(QueryResult[2]),
+                     "creatureType": str(QueryResult[3]),
+                     "race": str(QueryResult[4]),
+                     "stats": [int(mod) for mod in str(QueryResult[5]).split("|")[:6]],
+                     "statMods": [int(mod) for mod in str(QueryResult[6]).split("|")[:6]],
+                     "HPMax": int(str(QueryResult[7]).split("|")[0]),
+                     "HPTemp": int(str(QueryResult[7]).split("|")[1]),
+                     "HPCurrent": int(str(QueryResult[7]).split("|")[2]),
+                     "AC": int(QueryResult[8]),
+                     "speed": int(QueryResult[9]),
+                     "profBonus": int(QueryResult[10]),
+                     "proficiencies": str(QueryResult[11]),
+                     "savingThrows": str(QueryResult[12] + "|").split("|")[:-1][:6],
+                     "deathSaves": str(QueryResult[13]),
+                     "vulnerabilities": str(QueryResult[14]).split("|")[0].split(" ")[:20],
+                     "resistances": str(QueryResult[14]).split("|")[1].split(" ")[:20],
+                     "immunities": str(QueryResult[14]).split("|")[2].split(" ")[:20],
+                     "conditions": str(QueryResult[15]).split(" ")}
+    return(characterDict, True)
 
 def getAttackInfo(attack: str) -> tuple[dict, bool]:
-    attackFound = False
     attackDict = {}
-    with open("Zed\\attacks.csv") as attacksFile:
-        for line in attacksFile.readlines():
-            fields = line.split(",")
-            fields = [s.lower() for s in fields]
-            fields = [s.strip() for s in fields]
-            if fields[0].startswith(attack):
-                attackDict = {"name": str(fields[0]),
-                              "damageDice": str(fields[1] + "+").split("+")[:-1][:5],
-                              "damageType": str(fields[2] + "/").split("/")[:-1][:5],
-                              "class": str(fields[3]),
-                              "properties": str(fields[4] + " ").split(" ")[:-1][:5],
-                              "conditions": str(fields[5] + " ").split(" ")[:-1][:5]}
-                attackFound = True
-                break
-    return(attackDict, attackFound)
+    #Query the database for that attack (QueryResult)
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "SELECT * FROM attacks WHERE LOWER(Name) = LOWER(?)"
+    DBCursor.execute(Query, (attack,))
+    QueryResult = DBCursor.fetchone()
+    DBConnection.close()
+    #Convert the QueryResult into the attackDict
+    if QueryResult is None: return({}, False)
+    QueryResult = [str(Value).lower().strip() for Value in QueryResult]
+    attackDict = {"name": str(QueryResult[0]),
+                  "damageDice": str(QueryResult[1] + "+").split("+")[:-1][:5],
+                  "damageType": str(QueryResult[2] + "|").split("|")[:-1][:5],
+                  "class": str(QueryResult[3]),
+                  "properties": str(QueryResult[4] + " ").split(" ")[:-1][:5],
+                  "conditions": str(QueryResult[5] + " ").split(" ")[:-1][:5]}
+    return(attackDict, True)
 
 def getSpellInfo(spell: str) -> tuple[dict, bool]:
-    spellFound = False
     spellDict = {}
-    with open("Zed\\spells.csv") as spellFile:
-        for line in spellFile.readlines():
-            fields = line.split(",")
-            fields = [s.lower() for s in fields]
-            fields = [s.strip() for s in fields]
-            if fields[0].startswith(spell):
-                spellDict = {"name": str(fields[0]),
-                             "level": int(fields[1]),
-                             "castTime": str(fields[2]),
-                             "damageDice": str(fields[3] + "+").split("+")[:-1][:5],
-                             "damageType": str(fields[4] + "/").split("/")[:-1][:5],
-                             "save": str(fields[5]),
-                             "upcastDamage": str(fields[6]),
-                             "onFail": str(fields[7]),
-                             "conditions": str(fields[8] + " ").split(" ")[:-1][:10]}
-                spellFound = True
-                break
-    return(spellDict, spellFound)
+    #Query the database for that spell (QueryResult)
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "SELECT * FROM spells WHERE LOWER(Name) = LOWER(?)"
+    DBCursor.execute(Query, (spell,))
+    QueryResult = DBCursor.fetchone()
+    DBConnection.close()
+    #Convert the QueryResult into the spellDict
+    if QueryResult is None: return({}, False)
+    QueryResult = [str(Value).lower().strip() for Value in QueryResult]
+    spellDict = {"name": str(QueryResult[0]),
+                 "level": int(QueryResult[1]),
+                 "castTime": str(QueryResult[2]),
+                 "damageDice": str(QueryResult[3] + "+").split("+")[:-1][:5],
+                 "damageType": str(QueryResult[4] + "/").split("/")[:-1][:5],
+                 "save": str(QueryResult[5]),
+                 "upcastDamage": str(QueryResult[6]),
+                 "onFail": str(QueryResult[7]),
+                 "conditions": str(QueryResult[8] + " ").split(" ")[:-1][:10]}
+    return(spellDict, True)
 
-#All functions that write to the file call this function. Excetions to this include; /Create_Character and /Reset
-def writeInfo(file: str, infoDict: dict, remove: bool = False):
+#All functions that write to the file call this function.
+#Excetions to this include; /Reset
+#Others that read database; updateAutocompleteLists()
+def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
     #'Sanitise' the inputs
-    file = file.strip().lower()
+    tableName = tableName.strip().lower()
     #Setup variables
     fields = []
     lines, updatedLines = [], []
     updatedLine, lineName = "", ""
+    Query, QueryResult = "", ""
     #Validate data
-    if file not in ["characters", "charactersbk"]: raise ValueError("writeInfo Error: Invalid file name. File given: " + file) #"spells", "attacks", 
-    #Format line
-    if file in ["characters", "charactersbk"]:
-        fields = [infoDict["name"].title(),
-                  infoDict["class"].title() + " " + str(infoDict["level"]),
-                  infoDict["size"].title(),
-                  infoDict["creatureType"].title(),
-                  infoDict["race"].title(),
-                  "/".join([str(mod) for mod in infoDict["stats"]]),
-                  "/".join([str(mod) for mod in infoDict["statMods"]]),
-                  "/".join([str(infoDict["HPMax"]), str(infoDict["HPTemp"]), str(infoDict["HPCurrent"])]),
-                  str(infoDict["AC"]),
-                  str(infoDict["speed"]),
-                  str(infoDict["profBonus"]),
-                  infoDict["proficiencies"].title(),
-                  "/".join(infoDict["savingThrows"]).upper(),
-                  infoDict["deathSaves"],
-                  "/".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
-                  " ".join(infoDict["conditions"]).title()]
-    updatedLine = ",".join(fields)
-    #Get the lines in the file
-    with open("Zed\\" + file + ".csv", mode="r") as readFile:
-        lines = readFile.readlines()
-    #Replace the line with the updated
-    for line in sorted(set(lines[1:])): #Sorted() could get too much for a large database (for now its fine)
-        lineName, targetName = line.split(",")[0].lower(), updatedLine.split(",")[0].lower()
-        if lineName == targetName:
-            if remove: continue #Dont add the character to 'updatedLines'
-            else: updatedLines.append(updatedLine + "\n") 
-        else: updatedLines.append(line)
-    #Write the updated lines
-    with open("Zed\\" + file + ".csv", mode="w") as writeFile:
-        writeFile.write(lines[0]) #Header
-        writeFile.writelines(updatedLines)
-    updateAutocompleteLists()
-    return()
+    if tableName not in ["spells", "attacks", "characters", "charactersbk"]: raise ValueError("writeInfo Error: Invalid file name. File given: " + file)
+    #Connect to the database
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    #For characters
+    if tableName in ["characters", "charactersbk"]:
+        if isinstance(infoDict, dict): #If its a Dict (as it should), convert to list
+            fields = [infoDict["name"].title(),
+                      infoDict["class"].title() + " " + str(infoDict["level"]),
+                      infoDict["size"].title(),
+                      infoDict["creatureType"].title(),
+                      infoDict["race"].title(),
+                      "/".join([str(mod) for mod in infoDict["stats"]]),
+                      "/".join([str(mod) for mod in infoDict["statMods"]]),
+                      "/".join([str(infoDict["HPMax"]), str(infoDict["HPTemp"]), str(infoDict["HPCurrent"])]),
+                      str(infoDict["AC"]),
+                      str(infoDict["speed"]),
+                      str(infoDict["profBonus"]),
+                      infoDict["proficiencies"].title(),
+                      "/".join(infoDict["savingThrows"]).upper(),
+                      infoDict["deathSaves"],
+                      "/".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
+                      " ".join(infoDict["conditions"]).title()]
+        elif isinstance(infoDict, list): #If its a list (in case of /create_character)
+            fields = infoDict
+    #Check if character is present
+    Query = "SELECT * FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
+    DBCursor.execute(Query, (infoDict["name"],))
+    QueryResult = DBCursor.fetchone()
+    #Remove the Dict[Name] from relevent table (If applicable)
+    if remove and QueryResult: 
+        Query = "DELETE FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
+        DBCursor.execute(Query, (infoDict["name"],))
+    #If Dict[Name] not in relevent table, add it.
+    elif QueryResult is None: 
+        QuestionMarks = ", ".join(["?"] * len(fields))
+        Query = "INSERT INTO "+tableName+" VALUES ("+QuestionMarks+")"
+        DBCursor.execute(Query, fields)
+    #Dict[Name] in relevent table, update it
+    else:
+        DBCursor.execute("SELECT * FROM "+tableName+" LIMIT 1")
+        TableHeaders = [name[0] for name in DBCursor.description]
+        TableHeadersFormated = " = ?,".join(TableHeaders[1:])+" = ?"
+        Query = "UPDATE "+tableName+" SET "+TableHeadersFormated+" WHERE LOWER(Name) = LOWER(?)"
+        DBCursor.execute(Query, fields[1:]+fields[:1])
+    DBConnection.commit()
+    DBConnection.close()
 
 #Functions for autocomplete
 async def autocomplete_spells(interaction: discord.Interaction, current: str): #Autocomplete for spell
@@ -240,7 +278,7 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
         return()
     #Apply upcasting
     if spellDict["level"] <= 0: #Cantrips
-        for levRequirement in spellDict["upcastDamage"].split("/"):
+        for levRequirement in spellDict["upcastDamage"].split("|"):
             if int(levRequirement) <= casterDict["level"]: spellDict["damageDice"][0] = str(int(spellDict["damageDice"][0][0])+1)+spellDict["damageDice"][0][1:]
     elif upcast_level-spellDict["level"] >= 1: #Add extra damage from upcasting (based on level difference), and repeat the main damage type if there are multiple types
         spellDict["damageDice"].append(str(int(spellDict["upcastDamage"][0])*int(upcast_level-spellDict["level"]))+str(spellDict["upcastDamage"][1:]))
@@ -485,7 +523,7 @@ async def create_encounter(interaction: discord.Interaction, characters: str, ch
     for index, character in enumerate(characterList):
         charcterDict, characterFound = getCharacterInfo(character)
         if not characterFound: await interaction.response.send_message(character.title() + " count not be ")
-        characterList[index] = charcterDict["name"]
+        characterList[index] = characterDict["name"]
     #Create the encounter
     for character in characterList:
         encounter_state["actionsLeft"].append([1, 1, 1])
@@ -516,14 +554,14 @@ async def encounter(interaction, command: str, info1=None, info2=None):
         if characterDict["HPCurrent"] <= 0:
             deathSaveRoll = roll_dice(1, 20)
             if deathSaveRoll >= 10:
-                if int(characterDict["deathSaves"].split("/")[0]) >= 2:
+                if int(characterDict["deathSaves"].split("|")[0]) >= 2:
                     outputMessage += "\n:star2: Your character has been revived to 1hp "
                     apply_effects(characterDict["name"], 1, [], [])
                 else: outputMessage += "\n:coffin: Your character is at 0hp "
                 outputMessage += "(Your death save succeeded :sparkles:)"
                 apply_effects(characterDict["name"], 0, [], ["DeathsaveSuccess"])
             else:
-                if int(characterDict["deathSaves"].split("/")[1]) >= 2:
+                if int(characterDict["deathSaves"].split("|")[1]) >= 2:
                     del encounter_state["characterOrder"][encounter_state["characterOrder"].index(characterDict["name"])]
                     del encounter_state["characterOwners"][encounter_state["characterOrder"].index(characterDict["name"])]
                     encounter_state["currentIndex"] -= 1
@@ -740,13 +778,13 @@ async def create_character(interaction: discord.Interaction):
         #Stats
         await dmChannel.send("Enter your **Stats** in STR,DEX,CON,INT,WIS,CHA order separated by commas (e.g., 10,15,14,12,13,8).")
         msgStats = await client.wait_for('message', check=check, timeout=300)
-        rawStats = msgStats.content.strip().replace(",", "/")
-        statsList = rawStats.split('/')
+        rawStats = msgStats.content.strip().replace(",", "|")
+        statsList = rawStats.split("|")
         if len(statsList) != 6:
             await dmChannel.send("❌ Incorrect format. Please start over.")
             return
         modsList = [str((int(stat) - 10) // 2) for stat in statsList]
-        statMods = "/".join(modsList)
+        statMods = "|".join(modsList)
         #HP
         await dmChannel.send("What is your **Max HP**?")
         msgHp = await client.wait_for('message', check=check, timeout=300)
@@ -785,7 +823,7 @@ async def create_character(interaction: discord.Interaction):
                     skill = skillsList[idx]
                     if expertise: skill += "X2"
                     profSelected.append(skill)
-        skillProficiencies = "/".join(profSelected)
+        skillProficiencies = "|".join(profSelected)
         #Weapon Proficiencies
         await dmChannel.send("Select your **Weapon Proficiencies** by replying with numbers separated by commas. Add individual weapons at the end using their name as in the Players Handbook.\nIf you have no weapon proficiencies, enter 'None'.\n1. Simple Melee\n2. Simple Ranged\n3. Martial Melee\n4. Martial Ranged\nExample: 1,2,Rapier,Heavy crossbow")
         msgWeapons = await client.wait_for('message', check=check, timeout=300)
@@ -795,26 +833,27 @@ async def create_character(interaction: discord.Interaction):
         weaponProficiencies = weaponProficiencies.replace("3", "MM")
         weaponProficiencies = weaponProficiencies.replace("4", "MR")
         weaponProficiencies = weaponProficiencies.split(",")
-        proficiencies = "/".join([skillProficiencies] + weaponProficiencies)
-        if proficiencies.startswith("/"): proficiencies = proficiencies[1:]
+        proficiencies = "|".join([skillProficiencies] + weaponProficiencies)
+        if proficiencies.startswith("|"): proficiencies = proficiencies[1:]
         #Saving Throws
         await dmChannel.send("List your **saving throws you are proficient in**, separated by commas (e.g., CON,WIS).\n If you have no saving throws, enter 'None'.")
         msgSaved = await client.wait_for('message', check=check, timeout=300)
         savingThrows = msgSaved.content.strip()
-        savingThrows = savingThrows.replace(",", "/")
+        savingThrows = savingThrows.replace(",", "|")
         #Vun/Res/Imm
         await dmChannel.send("List your **Vulnerabilities/Resistances/Immunities**, individually separated by spaces and each category separated by '/' (or enter None/None/None).\n E.g. 'Cold Fire/Piercing Slashing Bludgeoning/Crits")
         msgVunResImm = await client.wait_for('message', check=check, timeout=300)
         VunResImm = msgVunResImm.content.strip()
+        VunResImm = VunResImm.replace("/", "|")
         #Confirmation preview
-        character_row = f"{name},{ClassLevel},{size},{creatureType},{race},{rawStats},{statMods},{maxHp}/0/{maxHp},{Ac},{speed},{profBonus},{proficiencies},{savingThrows},0/0,{VunResImm},None"
+        characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
         await dmChannel.send(f":pencil: Here is your generated character line:\n```{character_row}```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
-            with open("Zed\\charactersBK.csv", "a") as characterFileBK: characterFileBK.write(character_row + "\n")
-            with open("Zed\\characters.csv", "a") as characterFile: characterFile.write(character_row + "\n")
+            writeInfo("characters", characterInfoList)
+            writeInfo("charactersBK", characterInfoList)
             updateAutocompleteLists()
             await dmChannel.send(f"✅ {name} has been saved successfully! (Its normal for the interaction to fail)")
         else:
@@ -867,8 +906,12 @@ remove_character.autocomplete("character")(autocomplete_characters)
 @client.tree.command(name="reset", description="This command will reset the character database using the backup.")
 async def reset(interaction: discord.Interaction):
     try:
-        with open("Zed\\charactersBK.csv", "r") as characterFileBK: BKData = characterFileBK.read()
-        with open("Zed\\characters.csv", "w") as characterFile: characterFile.write(BKData)
+        DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+        DBCursor = DBConnection.cursor()
+        DBCursor.execute("DELETE FROM characters")
+        DBCursor.execute("INSERT INTO characters SELECT * FROM charactersBK")
+        DBConnection.commit()
+        DBConnection.close()
         await interaction.response.send_message("✅ Character database has been reset to the backup.")
     except Exception as e:
         await interaction.response.send_message("❌ Failed to reset the database: " + e)
@@ -981,16 +1024,17 @@ def updateAutocompleteLists():
     global setOfAllSpells
     lineName, fileName = "", ""
     lineNames = []
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
     #Update the Attack list
     for fileName in ["attacks", "characters", "spells"]:
-        with open("Zed\\"+fileName+".csv") as File:
-            for line in File.readlines()[1:]:
-                lineName = line.split(",")[0]
-                lineNames.append(lineName)
-        if fileName == "attacks": setOfAllAttacks = set(lineNames)
-        elif fileName == "characters": setOfAllCharacters = set(lineNames)
-        elif fileName == "spells": setOfAllSpells = set(lineNames)
-        lineNames = []
+        Query = "SELECT Name FROM " + fileName
+        DBCursor.execute(Query)
+        QueryResult = {line[0] for line in DBCursor.fetchall()}
+        print(str(QueryResult))
+        if fileName == "attacks": setOfAllAttacks = QueryResult
+        elif fileName == "characters": setOfAllCharacters = QueryResult
+        elif fileName == "spells": setOfAllSpells = QueryResult
         
 #function to roll damage (accounting for crits, resistances, immunities and vulnerabilities)
 def calc_damage(attacker: str, target: str, damageDice: list, damageType: list, bonusToHit: int, bonusToDmg: int, contestDC: int, contestDCMod: int, onSave: str = "none", advantage_override: str = "none", applyCrits: bool = True, rollToHitOverride: int = 0) -> tuple[list, list, int, bool, bool, str]:
@@ -1096,9 +1140,9 @@ def apply_effects(target: str, damage: int, conditions: list = [], extras: list 
     for condition in targetDict["conditions"]:
         if condition.startswith("concentration") and ability_check(targetDict["name"], "CON", "None") < max(10, damage/2): targetDict = remove_logic(target, condition)
     #Roll deathsaves (if applicable)
-    if "DeathsaveSuccess" in extras: targetDict["deathSaves"] = str(int(targetDict["deathSaves"].split("/")[0])+1)+"/"+targetDict["deathSaves"].split("/")[1]
-    if "DeathsaveFail" in extras: targetDict["deathSaves"] = targetDict["deathSaves"].split("/")[0]+"/"+str(int(targetDict["deathSaves"].split("/")[1])+1)
-    elif targetDict["HPCurrent"] > 0: targetDict["deathSaves"] = "0/0" #Reset
+    if "DeathsaveSuccess" in extras: targetDict["deathSaves"] = str(int(targetDict["deathSaves"].split("|")[0])+1)+"|"+targetDict["deathSaves"].split("|")[1]
+    if "DeathsaveFail" in extras: targetDict["deathSaves"] = targetDict["deathSaves"].split("|")[0]+"|"+str(int(targetDict["deathSaves"].split("|")[1])+1)
+    elif targetDict["HPCurrent"] > 0: targetDict["deathSaves"] = "0|0" #Reset
     #Write to the database and return
     writeInfo("characters", targetDict)
     print("apply_effects Feedback: "+targetDict["name"].title()+" took "+str(damage)+"Dmg, and conditions: "+str(conditions))
@@ -1159,7 +1203,7 @@ DONE ~~New character file system that includes creature type and size (for grapp
 DONE ~~Add an autocomplete for attacks/spells, targets and attackers/casters. This is still limited to 25 options, but can work dynamically based on what is already present in the field. Will fix alot of user error and greatly improve user experience (aulthough not strictly required)~~
 DONE ~~spells like barkskin that set a minimum AC via a condition~~
 Note: /Search has been deprecated (removed)
-move to SQL?
+DONE ~~move to SQL?~~ Easier than I thought :D
     """
 # Start the bot
 client.run("MY_TOKEN")
