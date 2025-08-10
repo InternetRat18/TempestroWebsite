@@ -187,16 +187,16 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
                       infoDict["size"].title(),
                       infoDict["creatureType"].title(),
                       infoDict["race"].title(),
-                      "/".join([str(mod) for mod in infoDict["stats"]]),
-                      "/".join([str(mod) for mod in infoDict["statMods"]]),
-                      "/".join([str(infoDict["HPMax"]), str(infoDict["HPTemp"]), str(infoDict["HPCurrent"])]),
+                      "|".join([str(mod) for mod in infoDict["stats"]]),
+                      "|".join([str(mod) for mod in infoDict["statMods"]]),
+                      "|".join([str(infoDict["HPMax"]), str(infoDict["HPTemp"]), str(infoDict["HPCurrent"])]),
                       str(infoDict["AC"]),
                       str(infoDict["speed"]),
                       str(infoDict["profBonus"]),
                       infoDict["proficiencies"].title(),
-                      "/".join(infoDict["savingThrows"]).upper(),
+                      "|".join(infoDict["savingThrows"]).upper(),
                       infoDict["deathSaves"],
-                      "/".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
+                      "|".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
                       " ".join(infoDict["conditions"]).title()]
         elif isinstance(infoDict, list): #If its a list (in case of /create_character)
             fields = infoDict
@@ -349,6 +349,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     bonusToHit, bonusToDmg, secBonusToHit, secBonusToDmg, attackRollToHit, secAttackRollToHit, damageTotal = 0, 0, 0, 0, 0, 0, 0
     attackDamages, attackDamageTypes, secAttackDamages, secAttackDamageTypes, targetConditionsToApply, attackerConditionsToApply, combinedAttackDamages, combinedAttackDamageTypes = [], [], [], [], [], [], [], []
     attackSaved, attackCrit, secAttackSaved, secAttackCrit = False, False, False, False
+    sizeList = ["tiny", "small", "medium", "large", "huge", "gargantuan"]
     #Next, get the relevant information from the attacker, target, and attack files. (This will be rewritten when SQL is integrated.)
     attackerDict, attackerFound = getCharacterInfo(attacker)
     targetDict, targetFound = getCharacterInfo(target)
@@ -378,11 +379,24 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
         if len(secAttackDict["damageType"]) > 1 and len(secAttackDict["damageDice"]) !=  len(secAttackDict["damageType"]):
             await interaction.response.send_message("The off-hand attack has invalid damage format.")
             return()
-        print(str("light" not in secAttackDict["properties"] or "light" not in attackDict["properties"]))
-        print(str("special" not in secAttackDict["properties"]))
-        if ("light" not in secAttackDict["properties"] or "light" not in attackDict["properties"]) and "special" not in secAttackDict["properties"]:
+        if ("light" not in secAttackDict["properties"] or "light" not in attackDict["properties"]) and "special" not in secAttackDict["properties"] and not (attackDict["name"] == secAttackDict["name"] and "versatile" in str(attackDict["properties"])):
             await interaction.response.send_message("That duel-weilding request was not valid.")
             return()
+    if attackDict["name"] == "grapple":
+        if sizeList.index(targetDict["size"]) > sizeList.index(attackerDict["size"])+1:
+            await interaction.response.send_message("The targets size is too large for you to grapple.")
+            return()
+    if attackDict["name"] == "net":
+        if targetDict["size"] in ["huge", "gargantuan"]:
+            await interaction.response.send_message("The target is too large to be affected by a net.")
+            return()
+    #Apply versatile property (if applicable):
+    if secAttackFound:
+        if attackDict["name"] == secAttackDict["name"] and "versatile" in str(attackDict["properties"]):
+            for wepProperty in attackDict["properties"]:
+                if wepProperty.startswith("versatile"):
+                    secondary_attack, secAttackFound = "none", False
+                    attackDict["damageDice"][0] = wepProperty[9:]
     #Now deduce the bonusToHit
     bonusToHit = weapon_mod
     if "finesse" in attackDict["properties"]: bonusToHit += max(attackerDict["statMods"][0], attackerDict["statMods"][1])
@@ -414,12 +428,10 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
             if secAttackFound: secAttackRollToHitString, secAttackTargetDCString, actionsToRemove = str(secAttackRollToHit) + "Hit", str(targetDict["AC"]) + "AC", actionsToRemove+"Bonusaction"
     #Roll damage (for special attacks)
     if attackDict["name"] == "net":
-        print("CRETURE SIZE IS WANTED")
         attackRollToHit, extraEffects = ability_check(attackerDict["name"], "DEX", "none")
         if 8+bonusToDmg < attackRollToHit: attackSaved = True
         attackRollToHitString, attackTargetDCString, actionsToRemove = str(8+bonusToDmg) + "Dex", str(attackRollToHit) + "Dex", actionsToRemove+"Action"
-    elif attackDict["name"] == "grapple":
-        print("CRETURE SIZE IS WANTED")
+    elif attackDict["name"] == "grapple": 
         if ability_check(targetDict["name"], "STR", "athletics", "none", True) >= ability_check(targetDict["name"], "DEX", "acrobatics", "none", True): #Determine if the target is better at Athletics or Acrobatics
             (attackRollToHit, extraEffects), (secAttackRollToHit, _), preferredSkill = ability_check(attackerDict["name"], "STR", "athletics"), ability_check(targetDict["name"], "STR", "athletics"), "Athletics"
         else: (attackRollToHit, extraEffects), (secAttackRollToHit, _), preferredSkill = ability_check(attackerDict["name"], "STR", "athletics"), ability_check(targetDict["name"], "DEX", "acrobatics"), "Acrobatics"
@@ -764,9 +776,15 @@ async def create_character(interaction: discord.Interaction):
         msgClassAndLevel = await client.wait_for('message', check=check, timeout=300)
         ClassLevel = msgClassAndLevel.content.strip()
         #Size
-        await dmChannel.send("What is your characters **Size**? Usually this is 'Medium'.")
+        sizeList = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"]
+        sizePrompt = "\n".join([str(i+1)+". "+size for i, size in enumerate(sizeList)])
+        await dmChannel.send("What is your characters **Size**? Usually this is 'Medium'.\nReply with the number that represents your characters size (e.g. 3).")
         msgSize = await client.wait_for('message', check=check, timeout=300)
         size = msgSize.content.strip()
+        if int(size)-1 < 0 or int(size)-1 > 5:
+            await dmChannel.send("❌ Incorrect entry. Please start over.")
+            return()
+        size = sizeList[int(size)-1]
         #CreatureType
         await dmChannel.send("What is your characters **Creature Type**? Usually this is 'Humanoid'.")
         msgCreatureType = await client.wait_for('message', check=check, timeout=300)
@@ -782,7 +800,7 @@ async def create_character(interaction: discord.Interaction):
         statsList = rawStats.split("|")
         if len(statsList) != 6:
             await dmChannel.send("❌ Incorrect format. Please start over.")
-            return
+            return()
         modsList = [str((int(stat) - 10) // 2) for stat in statsList]
         statMods = "|".join(modsList)
         #HP
@@ -809,8 +827,8 @@ async def create_character(interaction: discord.Interaction):
             profBonus = 2
         #Skill Proficiencies
         skillsList = ["Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception", "History", "Insight", "Intimidation", "Investigation", "Medicine", "Nature", "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand", "Stealth", "Survival"]
-        skills_prompt = "\n".join([f"{i+1}. {skill}" for i, skill in enumerate(skillsList)])
-        await dmChannel.send(f"Select your **Skill Proficiencies** by replying with numbers separated by commas.\nFor expertise, add 'E' afterwards (e.g., 3,6,12E).\nIf you have no skills, enter '0'.\n\n{skills_prompt}")
+        skillsPrompt = "\n".join([str(i+1)+". "+skill for i, skill in enumerate(skillsList)])
+        await dmChannel.send("Select your **Skill Proficiencies** by replying with numbers separated by commas.\nFor expertise, add 'E' afterwards (e.g. 3,6,12E).\nIf you have no skills, enter '0'.\n\n"+skills_prompt)
         msgProficiencies = await client.wait_for('message', check=check, timeout=300)
         entries = [x.strip().upper() for x in msgProficiencies.content.strip().split(',')]
         profSelected = []
@@ -1031,7 +1049,6 @@ def updateAutocompleteLists():
         Query = "SELECT Name FROM " + fileName
         DBCursor.execute(Query)
         QueryResult = {line[0] for line in DBCursor.fetchall()}
-        print(str(QueryResult))
         if fileName == "attacks": setOfAllAttacks = QueryResult
         elif fileName == "characters": setOfAllCharacters = QueryResult
         elif fileName == "spells": setOfAllSpells = QueryResult
@@ -1204,6 +1221,7 @@ DONE ~~Add an autocomplete for attacks/spells, targets and attackers/casters. Th
 DONE ~~spells like barkskin that set a minimum AC via a condition~~
 Note: /Search has been deprecated (removed)
 DONE ~~move to SQL?~~ Easier than I thought :D
+DONE ~~Add the versatile property~~
     """
 # Start the bot
 client.run("MY_TOKEN")
