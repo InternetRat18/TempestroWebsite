@@ -55,7 +55,7 @@ class DnDBot(commands.Bot):
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
         startTime = time.time()
-        DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         TableCount = len(DBCursor.fetchall())
         if not TableCount > 0:
             for fileName in csvFiles:
@@ -202,12 +202,12 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
             fields = infoDict
     #Check if character is present
     Query = "SELECT * FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
-    DBCursor.execute(Query, (infoDict["name"],))
+    DBCursor.execute(Query, (fields[0],))
     QueryResult = DBCursor.fetchone()
     #Remove the Dict[Name] from relevent table (If applicable)
     if remove and QueryResult: 
         Query = "DELETE FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
-        DBCursor.execute(Query, (infoDict["name"],))
+        DBCursor.execute(Query, (fields[0],))
     #If Dict[Name] not in relevent table, add it.
     elif QueryResult is None: 
         QuestionMarks = ", ".join(["?"] * len(fields))
@@ -622,13 +622,13 @@ async def encounter(interaction, command: str, info1=None, info2=None):
     elif command == "remove action":
         try: #Allows /cast and /attack to be used outside of an encounter
             if info2 != "": #If a character is entered
-                print("Removing " + info1.title() + " from " + info2 + ".")
                 actionIndex = {"action": 0, "bonus action": 1, "reaction": 2}.get(info1)
                 if actionIndex is None: raise ValueError("Invalid value provided for action. Action given: " + str(info1))
                 if encounter_state["actionsLeft"][encounter_state["characterOrder"].index(info2)][actionIndex] <= 0: #If it already is 0, send a follow-up message
                     message = await interaction.original_response()
                     await message.edit(content=message.content + "\n:grey_exclamation: You did not have the required "+info1.title()+" to do that (effects still applied")
                 encounter_state["actionsLeft"][encounter_state["characterOrder"].index(info2)][actionIndex] -= 1
+                print("Removed " + info1.title() + " from " + info2.title() + ".")
             else: #remove it from the current characters turn
                 print("No character entered, removing " + info1.title() + " from current indexed character.")
                 if info1 == "action": encounter_state["actionsLeft"][encounter_state["currentIndex"]][0] = max(encounter_state["actionsLeft"][encounter_state["currentIndex"]][0]-1, 0)
@@ -683,9 +683,9 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, cond
     #Setup some variables
     targetDict = {}
     targetFound = False
-    returnString = ""
+    returnString, outputMessage = "", ""
     #Get target info
-    targetDict, TargetFound = getCharacterInfo(target)
+    targetDict, targetFound = getCharacterInfo(target)
     #Validate Data
     if not targetFound:
         await interaction.response.send_message("The target "+target.title()+" was not found, check input and try again.")
@@ -693,12 +693,12 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, cond
     if condition == "" and condition_duration > 0:
         await interaction.response.send_message("Condition duration was entered without a condition. This does not compute.")
         return()
-    #AppLy the effects
+    #Apply the effects
     if condition_duration <= 0: returnString = apply_effects(targetDict["name"], damage, [condition])
     elif condition_duration > 0: returnString = apply_effects(targetDict["name"], damage, [condition+"."+str(condition_duration)])
     #Format output
-    if int(damage) >= 0: outputMessage += target.title() + " has taken " + str(damage) + " damage."
-    elif int(damage) < 0: outputMessage += target.title() + " has been healed for " + str(int(damage)*-1) + " damage."
+    if int(damage) >= 0: outputMessage += ":crossed_swords: " + target.title() + " has taken " + str(damage) + " damage."
+    elif int(damage) < 0: outputMessage += ":heart: " + target.title() + " has been healed for " + str(int(damage)*-1) + " damage."
     if condition != "":
         outputMessage += "\n" + str(condition) + " has also been applied"
         if int(condition_duration) > 0: outputMessage += " for " + str(int(condition_duration)) + " rounds"
@@ -778,7 +778,7 @@ async def create_character(interaction: discord.Interaction):
         #Size
         sizeList = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"]
         sizePrompt = "\n".join([str(i+1)+". "+size for i, size in enumerate(sizeList)])
-        await dmChannel.send("What is your characters **Size**? Usually this is 'Medium'.\nReply with the number that represents your characters size (e.g. 3).")
+        await dmChannel.send("What is your characters **Size**? Usually this is 'Medium'.\nReply with the number that represents your characters size (e.g. 3).\n"+sizePrompt)
         msgSize = await client.wait_for('message', check=check, timeout=300)
         size = msgSize.content.strip()
         if int(size)-1 < 0 or int(size)-1 > 5:
@@ -794,7 +794,7 @@ async def create_character(interaction: discord.Interaction):
         msgRace = await client.wait_for('message', check=check, timeout=300)
         race = msgRace.content.strip()
         #Stats
-        await dmChannel.send("Enter your **Stats** in STR,DEX,CON,INT,WIS,CHA order separated by commas (e.g., 10,15,14,12,13,8).")
+        await dmChannel.send("Enter your **Stats** in STR,DEX,CON,INT,WIS,CHA order separated by commas (e.g. 10,15,14,12,13,8).")
         msgStats = await client.wait_for('message', check=check, timeout=300)
         rawStats = msgStats.content.strip().replace(",", "|")
         statsList = rawStats.split("|")
@@ -828,7 +828,7 @@ async def create_character(interaction: discord.Interaction):
         #Skill Proficiencies
         skillsList = ["Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception", "History", "Insight", "Intimidation", "Investigation", "Medicine", "Nature", "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand", "Stealth", "Survival"]
         skillsPrompt = "\n".join([str(i+1)+". "+skill for i, skill in enumerate(skillsList)])
-        await dmChannel.send("Select your **Skill Proficiencies** by replying with numbers separated by commas.\nFor expertise, add 'E' afterwards (e.g. 3,6,12E).\nIf you have no skills, enter '0'.\n\n"+skills_prompt)
+        await dmChannel.send("Select your **Skill Proficiencies** by replying with numbers separated by commas.\nFor expertise, add 'E' afterwards (e.g. 3,6,12E).\nIf you have no skills, enter '0'.\n"+skillsPrompt)
         msgProficiencies = await client.wait_for('message', check=check, timeout=300)
         entries = [x.strip().upper() for x in msgProficiencies.content.strip().split(',')]
         profSelected = []
@@ -854,7 +854,7 @@ async def create_character(interaction: discord.Interaction):
         proficiencies = "|".join([skillProficiencies] + weaponProficiencies)
         if proficiencies.startswith("|"): proficiencies = proficiencies[1:]
         #Saving Throws
-        await dmChannel.send("List your **saving throws you are proficient in**, separated by commas (e.g., CON,WIS).\n If you have no saving throws, enter 'None'.")
+        await dmChannel.send("List your **saving throws you are proficient in**, separated by commas (e.g. CON,WIS).\n If you have no saving throws, enter 'None'.")
         msgSaved = await client.wait_for('message', check=check, timeout=300)
         savingThrows = msgSaved.content.strip()
         savingThrows = savingThrows.replace(",", "|")
@@ -866,14 +866,14 @@ async def create_character(interaction: discord.Interaction):
         #Confirmation preview
         characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
-        await dmChannel.send(f":pencil: Here is your generated character line:\n```{character_row}```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
+        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
             writeInfo("characters", characterInfoList)
             writeInfo("charactersBK", characterInfoList)
             updateAutocompleteLists()
-            await dmChannel.send(f"✅ {name} has been saved successfully! (Its normal for the interaction to fail)")
+            await dmChannel.send("✅ "+name+" has been saved successfully! (Its normal for the interaction to fail)")
         else:
             await dmChannel.send("❌ Character creation cancelled.")
 
@@ -1145,8 +1145,7 @@ def apply_effects(target: str, damage: int, conditions: list = [], extras: list 
     if targetDict["HPTemp"] > 0 and damage > 0:
         targetDict["HPTemp"] = max(0, targetDict["HPTemp"] - damage)
         damage -= max(damage, targetDict["HPTemp"])
-    if damage > 0: targetDict["HPCurrent"] -= damage
-    if damage < 0: targetDict["HPCurrent"] += damage
+    targetDict["HPCurrent"] -= damage
     targetDict["HPCurrent"] = min(targetDict["HPCurrent"], targetDict["HPMax"])
     if targetDict["HPCurrent"] <= 0: feedbackString += "TargetZeroHP"
     #Apply conditions (and effects)
