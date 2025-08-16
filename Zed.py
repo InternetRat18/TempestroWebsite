@@ -16,6 +16,7 @@ import math
 import sqlite3
 
 intents = discord.Intents.default()
+intents.members = True
 intents.messages = True #only used for DMs
 intents.message_content = True #only used for DMs
 
@@ -50,27 +51,28 @@ class DnDBot(commands.Bot):
             print("Running in production mode. Syncing globally.")
             synced = await self.tree.sync()
             print("Slash commands synced: " + str(len(synced)))
-        #TEMP: Convert CSV to SQLite Database (Once Code is finnised this will not be used)
-        csvFiles = ["characters", "charactersBK", "attacks", "spells"]
+        #Initalise the databse (not not already)
+        startTime = time.time()
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
-        startTime = time.time()
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS attacks (Name TEXT, Damage TEXT, DamageType TEXT, AttackClass TEXT, Properties TEXT, Conditions TEXT)")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS spells (Name TEXT, SpellLevel TEXT, CastTime TEXT, Damage TEXT, DamageType TEXT, Save TEXT, ExtraLvlDmg TEXT, OnFail TEXT, Conditions TEXT)")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS characters (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS charactersBK (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS userIDs (UserID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, UserID TEXT)")
+        #Upload contents of CSV Files
         DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        TableCount = len(DBCursor.fetchall())
-        if not TableCount > 0:
-            for fileName in csvFiles:
-                with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = file.readlines()
-                #Get headers and create data tables
-                headers = fileLines.pop(0).strip().split(",") #First row is column names
-                columns = ", ".join(str(header+" TEXT") for header in headers)
-                DBCursor.execute("CREATE TABLE IF NOT EXISTS "+fileName+" ("+columns+")")
-                #Insert each row into the created table
-                for line in fileLines:
-                    row = line.strip().split(",")
-                    placeholders = ", ".join("?" for _ in row)
-                    DBCursor.execute(f"INSERT INTO {fileName} VALUES ({placeholders})", row)
-            DBConnection.commit()
-            print("["+str(time.time()-startTime)+"]DNDatabase Initalised from CSV Files.")
+        Tables = DBCursor.fetchall()
+        print(Tables)
+        csvFilesToUpload = ["attacks", "spells"]
+        for fileName in csvFilesToUpload:
+            with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = file.readlines()
+            for line in fileLines:
+                row = line.strip().split(",")
+                placeholders = ", ".join("?" for _ in row)
+                DBCursor.execute(f"INSERT INTO {fileName} VALUES ({placeholders})", row)
+        print("["+str(time.time()-startTime)+"]DNDatabase Initalised from CSV Files.")
+        DBConnection.commit()
         DBConnection.close()
         #Update autocomplete lists
         updateAutocompleteLists()
@@ -111,7 +113,7 @@ def getCharacterInfo(character: str, BKFile: bool = False) -> tuple[dict, bool]:
                      "AC": int(QueryResult[8]),
                      "speed": int(QueryResult[9]),
                      "profBonus": int(QueryResult[10]),
-                     "proficiencies": str(QueryResult[11]),
+                     "proficiencies": str(QueryResult[11]+ "|").split("|")[:-1],
                      "savingThrows": str(QueryResult[12] + "|").split("|")[:-1][:6],
                      "deathSaves": str(QueryResult[13]),
                      "vulnerabilities": str(QueryResult[14]).split("|")[0].split(" ")[:20],
@@ -166,7 +168,7 @@ def getSpellInfo(spell: str) -> tuple[dict, bool]:
 #All functions that write to the file call this function.
 #Excetions to this include; /Reset
 #Others that read database; updateAutocompleteLists()
-def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
+def writeInfo(tableName: str, infoDict: dict, remove: bool = False, userID: str = 0):
     #'Sanitise' the inputs
     tableName = tableName.strip().lower()
     #Setup variables
@@ -193,13 +195,14 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
                       str(infoDict["AC"]),
                       str(infoDict["speed"]),
                       str(infoDict["profBonus"]),
-                      infoDict["proficiencies"].title(),
+                      "|".join([str(prof).title() for prof in infoDict["proficiencies"]]),
                       "|".join(infoDict["savingThrows"]).upper(),
                       infoDict["deathSaves"],
                       "|".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
                       " ".join(infoDict["conditions"]).title()]
         elif isinstance(infoDict, list): #If its a list (in case of /create_character)
             fields = infoDict
+        print("writeInfo Info: Fields; " +str(fields))
     #Check if character is present
     Query = "SELECT * FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
     DBCursor.execute(Query, (fields[0],))
@@ -208,11 +211,24 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
     if remove and QueryResult: 
         Query = "DELETE FROM "+tableName+" WHERE LOWER(Name) = LOWER(?)"
         DBCursor.execute(Query, (fields[0],))
+        
     #If Dict[Name] not in relevent table, add it.
-    elif QueryResult is None: 
-        QuestionMarks = ", ".join(["?"] * len(fields))
+    elif QueryResult is None:
+        Query = "SELECT * FROM userIDs WHERE LOWER(UserID) = LOWER(?)"
+        DBCursor.execute(Query, (userID,))
+        QueryResult = DBCursor.fetchone()
+        if QueryResult is None: #userID is NOT in the table, add it
+            Query = "INSERT INTO userIDs(UserID) VALUES (?)"
+            DBCursor.execute(Query, (userID,))
+            Query = "SELECT * FROM userIDs WHERE LOWER(UserID) = LOWER(?)"
+            DBCursor.execute(Query, (userID,))
+            QueryResult = DBCursor.fetchone()
+        userIDPKey = QueryResult[0]
+        QuestionMarks = ", ".join(["?"] * int(len(fields)+1))
         Query = "INSERT INTO "+tableName+" VALUES ("+QuestionMarks+")"
-        DBCursor.execute(Query, fields)
+        print("writeInfo Info: Query; "+ Query)
+        print("writeInfo Info: Bindings; "+ str([userIDPKey] + fields))
+        DBCursor.execute(Query, ([userIDPKey] + fields))
     #Dict[Name] in relevent table, update it
     else:
         DBCursor.execute("SELECT * FROM "+tableName+" LIMIT 1")
@@ -226,8 +242,21 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False):
 #Functions for autocomplete
 async def autocomplete_spells(interaction: discord.Interaction, current: str): #Autocomplete for spell
     return [app_commands.Choice(name=spell, value=spell) for spell in setOfAllSpells if current.title() in spell.title()][:25]
-async def autocomplete_characters(interaction: discord.Interaction, current: str): #Autocomplete for caster
-    return [app_commands.Choice(name=caster, value=caster)for caster in setOfAllCharacters if current.title() in caster.title()][:25]
+async def autocomplete_characters(interaction: discord.Interaction, current: str): #Autocomplete for caster/attacker/roller
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    #setOfAllServerCharacters = setOfAllCharacters
+    GuildUserIDs = [str(user.id) for user in interaction.guild.members]
+    QuestionMarks = ",".join("?" * len(GuildUserIDs))
+    Query = "SELECT UserID_PKey FROM userIDs WHERE UserID IN ("+QuestionMarks+")"
+    DBCursor.execute(Query, GuildUserIDs)
+    GuildUserPKeys = [row[0] for row in DBCursor.fetchall()]
+    QuestionMarks = ",".join("?" * len(GuildUserPKeys))
+    Query = "SELECT Name FROM characters WHERE UserID_FKey IN ("+QuestionMarks+")"
+    DBCursor.execute(Query, GuildUserPKeys)
+    setOfAllReleventCharacters = {row[0] for row in DBCursor.fetchall()}
+    DBConnection.close()
+    return [app_commands.Choice(name=caster, value=caster) for caster in setOfAllReleventCharacters if current.title() in caster.title()][:25]
 async def autocomplete_attacks(interaction: discord.Interaction, current: str): #Autocomplete for targets (only the first target)
     return [app_commands.Choice(name=attack, value=attack)for attack in setOfAllAttacks if current.title() in attack.title()][:25]
 
@@ -770,9 +799,9 @@ async def create_character(interaction: discord.Interaction):
         #Name
         await dmChannel.send("What is your character's **Name**?")
         msgName = await client.wait_for('message', check=check, timeout=300)
-        name = msgName.content.strip()
+        name = msgName.content.strip() 
         #Class and Level
-        await dmChannel.send("What is your **Class and Level**? (e.g., Wizard 9)\nFor GM's, if this is a monster, enter 'Monster' + CR.")
+        """await dmChannel.send("What is your **Class and Level**? (e.g., Wizard 9)\nFor GM's, if this is a monster, enter 'Monster' + CR.")
         msgClassAndLevel = await client.wait_for('message', check=check, timeout=300)
         ClassLevel = msgClassAndLevel.content.strip()
         #Size
@@ -862,16 +891,17 @@ async def create_character(interaction: discord.Interaction):
         await dmChannel.send("List your **Vulnerabilities/Resistances/Immunities**, individually separated by spaces and each category separated by '/' (or enter None/None/None).\n E.g. 'Cold Fire/Piercing Slashing Bludgeoning/Crits")
         msgVunResImm = await client.wait_for('message', check=check, timeout=300)
         VunResImm = msgVunResImm.content.strip()
-        VunResImm = VunResImm.replace("/", "|")
+        VunResImm = VunResImm.replace("/", "|")"""
         #Confirmation preview
-        characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
+        characterInfoList = name.split(",")
+        #characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
         await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
-            writeInfo("characters", characterInfoList)
-            writeInfo("charactersBK", characterInfoList)
+            writeInfo("characters", characterInfoList, False, str(user.id))
+            writeInfo("charactersBK", characterInfoList, False, str(user.id))
             updateAutocompleteLists()
             await dmChannel.send("✅ "+name+" has been saved successfully! (Its normal for the interaction to fail)")
         else:
@@ -949,14 +979,21 @@ async def roll_ability(interaction: discord.Interaction, roller: str, ability: s
     #Get the relevant information from the roller
     rollerDict, rollerFound = getCharacterInfo(roller)
     #Setup some variables
-    relevantStat = "none"
+    relevantStat, outputMessage = "none", ""
+    abilityResult = 0
     if ability not in ["STR", "DEX", "CON", "INT", "WIS", "CHA"]:
-        if ability == "athletics": relevantStat = "STR"
+        if ability in ["athletics"]: relevantStat = "STR"
         elif ability in ["acrobatics", "sleight of hand", "stealth"]: relevantStat = "DEX"
         elif ability in ["arcana", "history", "investigation", "nature", "Religion"]: relevantStat = "INT"
         elif ability in ["animal handling", "insight", "medicine", "perception", "survival"]: relevantStat = "WIS"
         elif ability in ["deception", "intimidation", "performance", "persuasion"]: relevantStat = "CHA"
-    await interaction.response.send_message(roller.title() + ", your " + ability + " check rolled: " + str(ability_check(roller, relevantStat, ability, advantage_override, passive)) + ".")
+    #Format and send output:
+    abilityResult, feedbackString = ability_check(roller, relevantStat, ability, advantage_override, passive)
+    outputMessage = roller.title() + ", your " + ability + " check rolled: " + str(abilityResult) + "."
+    if "Bless" in feedbackString: outputMessage += "\n:book: Special effect 'Bless' triggered! (+1d4 to attack roll/save)"
+    if "Advantage" in feedbackString: outputMessage += ":grey_exclamation: You were given Advantage."
+    if "Disadvantage" in feedbackString: outputMessage += ":grey_exclamation: You were given Disadvantage."
+    await interaction.response.send_message(outputMessage)
 roll_ability.autocomplete("roller")(autocomplete_characters)
 
 #function to Roll ability checks/saving throws
@@ -972,6 +1009,7 @@ def ability_check(roller: str, abilityStat: str, abilityCheck: str, advantage_ov
     advantage, disadvantage = False, False
     extraEffects = ""
     #Dedeuce the modifier
+    if abilityStat == "NONE": abilityStat = abilityCheck.upper() #Saving throw, set stat to 'ability'.
     modifier = int(rollerDict["statMods"][["STR","DEX","CON","INT","WIS","CHA"].index(abilityStat)])
     if abilityCheck == "none": #Saving throw
         for profSavingThrow in rollerDict["savingThrows"]:
@@ -985,7 +1023,8 @@ def ability_check(roller: str, abilityStat: str, abilityCheck: str, advantage_ov
     else:
         for ability in rollerDict["proficiencies"]:
             if ability == abilityCheck: modifier += rollerDict["profBonus"] #Proficiency
-            if ability == abilityCheck+"X2": modifier += rollerDict["profBonus"] #Expertise
+            print("ability_check Info: Attempting Expert; does " + ability + "==" + abilityCheck+"x2")
+            if ability == abilityCheck+"x2": modifier += rollerDict["profBonus"] #Expertise
         for condition in rollerDict["conditions"]:
             if condition.startswith(abilityCheck): modifier += int(condition.replace(abilityCheck, "")) #e.g. Stealth+10 (for 'Pass without trace')
     #Deduce (dis)advantage
@@ -1101,7 +1140,7 @@ def calc_damage(attacker: str, target: str, damageDice: list, damageType: list, 
     if (advantage or disadvantage) and not (advantage and disadvantage): alternateRollToHit = roll_dice(1, 20, bonusToHit)
     if advantage and not disadvantage: rollToHit, feedbackString = max(rollToHit, alternateRollToHit), feedbackString+"Advantage"
     if disadvantage and not advantage: rollToHit, feedbackString = min(rollToHit, alternateRollToHit), feedbackString+"Disadvantage"
-    print("^Roll to hit(s).")
+    print("^Roll to hit(s)^")
     crit = True if rollToHit-bonusToHit==20 and not "crit" in targetDict["immunities"] else False
     saved = True if rollToHit<contestDC+contestDCMod and not crit else False
     #Roll damage
@@ -1221,6 +1260,10 @@ DONE ~~spells like barkskin that set a minimum AC via a condition~~
 Note: /Search has been deprecated (removed)
 DONE ~~move to SQL?~~ Easier than I thought :D
 DONE ~~Add the versatile property~~
+ALSO DELETE THE USER ID FROM THE USERID TABLE IF NO CHARACTERS REFERENCE IT ANYMORE (After/upon character deletion)
+So far, only the autocomplete is matching users with their characters. A similar thing needs to be done with getting character info (if they're getting info for a user's character that's not in that guild, fail it.)
+Upon character creation, allow a single user to create a character with the same name as another one of their characters (different users may have the same character name)
+Fully encrypt the UserIDs table (or at least the ID column), which should be secure enough, as only the hosting PC (my PC) has the DNDatabase file, but it does add an extra layer.
     """
 # Start the bot
 client.run("MY_TOKEN")
