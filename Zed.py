@@ -45,14 +45,6 @@ intents.messages = True #only used for DMs
 intents.message_content = True #only used for DMs
 
 #Declare global variables
-#Used for all the information related to encounters. This can be called anywhere without the use of 'global encounter_state' (unless the whole variable is getting redefined)
-encounter_state = {
-    "characterOrder": [],
-    "characterOwners": [],
-    "currentIndex": 0,
-    "actionsLeft": [] #[Action, BonusAction and Reaction for each character
-} 
-focusMessage = None
 #Below lists will be defined on bot launch and writing of files, to give autocomplete functionality to core commands.
 setOfAllAttacks = {}
 setOfAllCharacters = {}
@@ -85,10 +77,11 @@ class DnDBot(commands.Bot):
         DBCursor.execute("CREATE TABLE IF NOT EXISTS characters (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
         DBCursor.execute("CREATE TABLE IF NOT EXISTS charactersBK (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
         DBCursor.execute("CREATE TABLE IF NOT EXISTS userIDs (UserID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, UserID TEXT)")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS encounters (GuildID_FKey INTEGER, CharacterOrder TEXT, CharacterOwners TEXT, CurrentIndex INTEGER, ActionsLeft TEXT, FOREIGN KEY (GuildID_FKey) REFERENCES guildIDs(GuildID_PKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS guildIDs (GuildID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, GuildID TEXT)")
         #Upload contents of CSV Files
         DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         Tables = DBCursor.fetchall()
-        print(Tables)
         csvFilesToUpload = ["attacks", "spells"]
         for fileName in csvFilesToUpload:
             with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = file.readlines()
@@ -196,7 +189,36 @@ def getSpellInfo(spell: str) -> tuple[dict, bool]:
                  "conditions": str(QueryResult[8] + " ").split(" ")[:-1][:10]}
     return(spellDict, True)
 
-#All functions that write to the file call this function.
+def getEncounterInfo(interaction: discord.Interaction) -> tuple[dict, bool]:
+    encounterDict = {}
+    #Query the database for an encounter linked to the interaction guild id)
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "SELECT * FROM encounters JOIN guildIDs ON encounters.GuildID_FKey = guildIDs.GuildID_PKey WHERE guildIDs.guildID = (?)"
+    DBCursor.execute(Query, (interaction.guild.id,))
+    QueryResult = DBCursor.fetchone()
+    DBConnection.close()
+    if QueryResult is None: return({}, False)
+    QueryResult = [str(Value).lower().strip() for Value in QueryResult]
+    encounterDict = {"GuildID_FKey": int(QueryResult[0]),
+                     "characterOrder": str(QueryResult[1]).split("|"),
+                     "characterOwners": str(QueryResult[2]).split("|"),
+                     "currentIndex": int(QueryResult[3]),
+                     "actionsLeft": [list(map(int, sublist.strip("[]").split(","))) for sublist in QueryResult[4].split("|")]}
+    return(encounterDict, True)
+
+def writeEncounterInfo(interaction: discord.Interaction, encounterDict: dict):
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    DBCursor.execute("SELECT * FROM encounters LIMIT 1")
+    TableHeaders = [name[0] for name in DBCursor.description]
+    TableHeadersFormated = " = ?,".join(TableHeaders)+" = ?"
+    Query = "UPDATE encounters SET "+TableHeadersFormated+" WHERE EXISTS (SELECT 1 FROM guildIDs WHERE encounters.GuildID_FKey = guildIDs.GuildID_PKey AND guildIDs.GuildID = ?)"
+    DBCursor.execute(Query, (encounterDict["GuildID_FKey"], "|".join(encounterDict["characterOrder"]), "|".join(encounterDict["characterOwners"]), int(encounterDict["currentIndex"]), "|".join(str(sublist) for sublist in encounterDict["actionsLeft"]), interaction.guild.id))
+    DBConnection.commit()
+    DBConnection.close()
+    
+#All functions that write to character files call this function.
 #Excetions to this include; /Reset
 #Others that read database; updateAutocompleteLists()
 def writeInfo(tableName: str, infoDict: dict, remove: bool = False, userID: str = 0) -> str:
@@ -250,13 +272,13 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False, userID: str 
             DBCursor.execute(Query, (userID,))
     #If Dict[Name] not in relevent table, add it.
     elif QueryResult is None:
-        Query = "SELECT * FROM userIDs WHERE LOWER(UserID) = LOWER(?)"
+        Query = "SELECT * FROM userIDs WHERE UserID = ?"
         DBCursor.execute(Query, (userID,))
         QueryResult = DBCursor.fetchone()
         if QueryResult is None: #userID is NOT in the table, add it
             Query = "INSERT INTO userIDs(UserID) VALUES (?)"
             DBCursor.execute(Query, (userID,))
-            Query = "SELECT * FROM userIDs WHERE LOWER(UserID) = LOWER(?)"
+            Query = "SELECT * FROM userIDs WHERE UserID = ?"
             DBCursor.execute(Query, (userID,))
             QueryResult = DBCursor.fetchone()
         userIDPKey = QueryResult[0]
@@ -520,6 +542,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     if advantage_override != "none": outputMessage += "\n:warning: Manual " + advantage_override.title() + " was given."
     elif "Advantage" in attackFeedbackString: outputMessage += ":grey_exclamation: You were given Advantage."
     elif "Disadvantage" in attackFeedbackString: outputMessage += ":grey_exclamation: You were given Disadvantage."
+    if "TargetZeroHP" in applyEffectsFeedback: outputMessage += "\n:skull: " + targetDict["name"].title() + " has reached 0HP."
     #Return string and take away relevent action.
     await interaction.response.send_message(outputMessage)
     if "Action" in actionsToRemove: await encounter(interaction, "remove action", "action", attackerDict["name"])
@@ -546,10 +569,10 @@ async def action(interaction: discord.Interaction, character: str, action: str, 
     characterDict, characterFound = getCharacterInfo(interaction, character)
     targetDict, targetFound = getCharacterInfo(interaction, target)
     #Validate Data
-    if action == "hide" and "Hidden" in characterDict["conditions"]:
+    if action == "hide" and "hidden" in str(characterDict["conditions"]):
         await interaction.response.send_message(":exclamation: " + character + " you are already hidden, you can't hide again.")
         return()
-    if action == "dodge" and "dodging" in characterDict["conditions"]:
+    if action == "dodge" and "dodging" in str(characterDict["conditions"]):
         await interaction.response.send_message(":exclamation: " + character + " you are already dodging, you can't dodge again.")
         return()
     if action == "help" and target == "":
@@ -559,18 +582,18 @@ async def action(interaction: discord.Interaction, character: str, action: str, 
         await interaction.response.send_message("Target was not found, check input and try again.")
         return()
     #Action help
-    if action == "Help":
+    if action == "help":
         apply_effects(interaction, target, 0, ["Helped.1"])
         await encounter(interaction, "remove action", "action", character)
         await interaction.response.send_message(target.title() + " is being helped this round.")
     #Action Hide
-    elif action == "Hide": #Make a stealth check and contest it with a passive perception on the target (if any)
-        if foundTarget:
+    elif action == "hide": #Make a stealth check and contest it with a passive perception on the target (if any)
+        if targetFound:
             if ability_check(interaction, characterDict["name"], "DEX", "Stealth") < ability_check(interaction, targetDict["name"], "WIS", "Perception", "None", True): saved = True
         if not saved: apply_effects(interaction, character, 0, ["Hidden"])
         await interaction.response.send_message(character.title() + ", you think you are hidden. " + ("✅ (You actually are)" if not saved else "❌ (You are NOT)"))
     #Action Dodge
-    elif action == "Dodge":
+    elif action == "dodge":
         apply_effects(interaction, target, 0, ["Dodging.1"])
         await encounter(interaction, "remove action", "action", character)
         await interaction.response.send_message(character.title() + ", you focus your effort on dodging until the start of your next turn.")
@@ -693,6 +716,7 @@ async def create_character(interaction: discord.Interaction):
         VunResImm = msgVunResImm.content.strip()
         VunResImm = VunResImm.replace("/", "|")
         #Confirmation preview
+        #DEV LINE characterInfoList = name.split(",")
         characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
         await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
@@ -758,8 +782,14 @@ async def reset(interaction: discord.Interaction):
     try:
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
-        DBCursor.execute("DELETE FROM characters")
-        DBCursor.execute("INSERT INTO characters SELECT * FROM charactersBK")
+        DBCursor.execute("SELECT * FROM characters LIMIT 1")
+        TableHeaders = [name[0] for name in DBCursor.description]
+        TableHeadersFormated = ", ".join(TableHeaders)
+        TableBKHeadersFormated = "charactersBK." + ", charactersBK.".join(TableHeaders)
+        GuildUserIDs = [str(user.id) for user in interaction.guild.members]
+        QuestionMarks = ",".join("?" * len(GuildUserIDs))
+        Query = "UPDATE characters SET ("+TableHeadersFormated+") = (SELECT "+TableBKHeadersFormated+" FROM charactersBK WHERE charactersBK.UserID_FKey = characters.UserID_FKey AND charactersBK.Name = characters.Name) WHERE UserID_FKey IN (SELECT userIDs.UserID_PKey FROM userIDs WHERE userIDs.UserID IN ("+QuestionMarks+"))"
+        DBCursor.execute(Query, GuildUserIDs)
         DBConnection.commit()
         DBConnection.close()
         await interaction.response.send_message("✅ Character database has been reset to the backup.")
@@ -771,7 +801,7 @@ async def reset(interaction: discord.Interaction):
 @client.tree.command(name="create_encounter", description="To create an encounter, usually only used by the DM/GM")
 @app_commands.describe(characters="The name of all characters (+monsters) you wish to be in the encounter, in turn order. Separate each character by a comma(,).", character_owners="The name(or @'s) of personnel who are owners of the characters. Have them in the same order as the characters entered.")
 async def create_encounter(interaction: discord.Interaction, characters: str, character_owners: str):
-    #'Sanitise' the user inputs
+    #'Sanitise' the user inputs (and transfer to list type)
     characterList = characters.split(",")
     characterList = [s.lower() for s in characterList]
     characterList = [s.strip() for s in characterList]
@@ -782,14 +812,14 @@ async def create_encounter(interaction: discord.Interaction, characters: str, ch
     index = 0
     charcterDict = {}
     characterFound = False
-    #Find characters full names and add them to the list
+    #Find characters full names (and if they exist)
     for index, character in enumerate(characterList):
-        charcterDict, characterFound = getCharacterInfo(interaction, character)
-        if not characterFound: await interaction.response.send_message(character.title() + " count not be ")
+        characterDict, characterFound = getCharacterInfo(interaction, character)
+        if not characterFound:
+            await interaction.response.send_message(character.title() + " could not be found, check input and try again.")
+            return()
         characterList[index] = characterDict["name"]
     #Create the encounter
-    for character in characterList:
-        encounter_state["actionsLeft"].append([1, 1, 1])
     await interaction.response.send_message("Encounter has started.")
     await encounter(interaction, "start", characterList, character_owners)
 
@@ -797,22 +827,36 @@ async def create_encounter(interaction: discord.Interaction, characters: str, ch
 async def encounter(interaction, command: str, info1=None, info2=None):
     #Command start encounter
     if command == "start":
-        encounter_state["characterOrder"] = info1
-        encounter_state["characterOwners"] = info2
-        encounter_state["currentIndex"] = 0
+        DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+        DBCursor = DBConnection.cursor()
+        Query = "SELECT * FROM guildIDs WHERE GuildID = ?"
+        DBCursor.execute(Query, (interaction.guild.id,))
+        QueryResult = DBCursor.fetchone()
+        #if QueryResult is not None: await interaction.response.send_message("This guild already has an encounter")
+        if QueryResult is None: #guildID is NOT in the table, add it
+            Query = "INSERT INTO guildIDs(GuildID) VALUES (?)"
+            DBCursor.execute(Query, (interaction.guild.id,))
+            Query = "SELECT * FROM guildIDs WHERE GuildID = ?"
+            DBCursor.execute(Query, (interaction.guild.id,))
+            QueryResult = DBCursor.fetchone()
+        guildIDPKey = QueryResult[0]
+        Query = "INSERT INTO encounters VALUES (?, ?, ?, ?, ?)"
+        DBCursor.execute(Query, ([guildIDPKey, "|".join(info1), "|".join(info2), 0, "|".join([str("[1, 1, 1]") for character in info1])]))
+        DBConnection.commit()
+        DBConnection.close()
         await encounter(interaction, "start turn")
     #Command start turn
     elif command == "start turn":
-        #Get info from character starting their turn
-        characterDict, characterFound = getCharacterInfo(interaction, encounter_state["characterOrder"][encounter_state["currentIndex"]])
-        if not characterFound: print("encounter 'start turn' Error: Critical error, character could not be found. Attemped to search for: " + str(encounter_state["characterOrder"][encounter_state["currentIndex"]]))
-        #Setup some varaibles
-        global focusMessage
+        #Get info from te counter state & current character + setup some ints
+        encounterDict, encounterFound = getEncounterInfo(interaction)
+        if not encounterFound: print("encounter 'start turn' Error: Critical error, encounter could not be found. This should not be posible.")
+        characterDict, characterFound = getCharacterInfo(interaction, encounterDict["characterOrder"][encounterDict["currentIndex"]])
+        if not characterFound: print("encounter 'start turn' Error: Critical error, character could not be found. Attemped to search for: " + str(encounterDict["characterOrder"][encounterDict["currentIndex"]]))
         deathSaveRoll, actCount, bActCount, rActCount, turnsRemaining = 0, 1, 1, 1, 0
         #Initalise the output Message
-        outputMessage = (characterDict["name"].title() + " (" + encounter_state["characterOwners"][encounter_state["currentIndex"]] + ") is starting their turn."
-                         + "\n:hourglass: " + encounter_state["characterOrder"][(encounter_state["currentIndex"] + 1) % len(encounter_state["characterOrder"])].title()
-                         + " (" + encounter_state["characterOwners"][(encounter_state["currentIndex"] + 1) % len(encounter_state["characterOwners"])] + ")" + " has their turn next.")
+        outputMessage = (characterDict["name"].title() + " (" + encounterDict["characterOwners"][encounterDict["currentIndex"]] + ") is starting their turn."
+                         + "\n:hourglass: " + encounterDict["characterOrder"][(encounterDict["currentIndex"] + 1) % len(encounterDict["characterOrder"])].title()
+                         + " (" + encounterDict["characterOwners"][(encounterDict["currentIndex"] + 1) % len(encounterDict["characterOwners"])] + ")" + " has their turn next.")
         #If the character is 0hp, roll deathsaves for their turn
         if characterDict["HPCurrent"] <= 0:
             deathSaveRoll = roll_dice(1, 20)
@@ -825,14 +869,14 @@ async def encounter(interaction, command: str, info1=None, info2=None):
                 apply_effects(interaction, characterDict["name"], 0, [], ["DeathsaveSuccess"])
             else:
                 if int(characterDict["deathSaves"].split("|")[1]) >= 2:
-                    del encounter_state["characterOrder"][encounter_state["characterOrder"].index(characterDict["name"])]
-                    del encounter_state["characterOwners"][encounter_state["characterOrder"].index(characterDict["name"])]
-                    encounter_state["currentIndex"] -= 1
+                    del encounterDict["characterOrder"][encounterDict["characterOrder"].index(characterDict["name"])]
+                    del encounterDict["characterOwners"][encounterDict["characterOrder"].index(characterDict["name"])]
+                    encounterDict["currentIndex"] -= 1
                     outputMessage += "\n:skull: Your character has died and has been removed from the turn order."
                 else: outputMessage += "\n:coffin: Your character is at 0hp "
                 outputMessage += "(Your death save failed :drop_of_blood:)"
                 apply_effects(interaction, characterDict["name"], 0, [], ["DeathsaveFail"])
-            focusMessage = await interaction.followup.send(outputMessage)
+            await interaction.followup.send(outputMessage)
             await encounter(interaction, "end turn")
             return()
         #If the character isn't a monster, show their HP and tempHP (if applicable)
@@ -855,69 +899,85 @@ async def encounter(interaction, command: str, info1=None, info2=None):
                     characterDict, _ = remove_logic(interaction, characterDict, condition)
                     apply_effects(interaction, characterDict["name"], 0, [conditionName+"."+str(turnsRemaining)])
         #Re-retrive the caracters info, and show their active conditions
-        characterDict, characterFound = getCharacterInfo(interaction, encounter_state["characterOrder"][encounter_state["currentIndex"]])
-        if not characterFound: print("encounter 'start turn' Error: Character could not be found for the 2nd time. Attemped to search for: " + str(encounter_state["characterOrder"][encounter_state["currentIndex"]]))
+        characterDict, characterFound = getCharacterInfo(interaction, encounterDict["characterOrder"][encounterDict["currentIndex"]])
+        if not characterFound: print("encounter 'start turn' Error: Character could not be found for the 2nd time. Attemped to search for: " + str(encounterDict["characterOrder"][encounterDict["currentIndex"]]))
         outputMessage += "\n:face_with_spiral_eyes: Your active conditions: " + str(characterDict["conditions"])
         #Update the encounter state with the action count and print the message
-        encounter_state["actionsLeft"][encounter_state["currentIndex"]] = [actCount, bActCount, rActCount]
+        encounterDict["actionsLeft"][encounterDict["currentIndex"]] = [actCount, bActCount, rActCount]
+        writeEncounterInfo(interaction, encounterDict)
         outputMessage += "\n:stopwatch: You will have ten(10) minutes to use your actions.\n:notepad_spiral: Check off your actions below as you go to keep track!"
-        focusMessage = await interaction.followup.send(outputMessage, view=ActionView())
+        await interaction.followup.send(outputMessage, view=ActionView(encounterDict))
     #Command end turn
     elif command == "end turn":
-        encounter_state["currentIndex"] += 1
-        if encounter_state["currentIndex"] >= len(encounter_state["characterOrder"]):
-            encounter_state["currentIndex"] = 0
+        encounterDict, encounterFound = getEncounterInfo(interaction)
+        if not encounterFound: print("encounter 'end turn' Error: Critical error, encounter could not be found. This should not be posible.")
+        encounterDict["currentIndex"] += 1
+        if encounterDict["currentIndex"] >= len(encounterDict["characterOrder"]):
+            encounterDict["currentIndex"] = 0
             await interaction.followup.send(":recycle: Going back to the start of the round. Environmental effects happen now.")
+        writeEncounterInfo(interaction, encounterDict)
         await encounter(interaction, "start turn")
     #Command remove action
     elif command == "remove action":
         try: #Allows /cast and /attack to be used outside of an encounter
-            if info2 != "": #If a character is entered
-                actionIndex = {"action": 0, "bonus action": 1, "reaction": 2}.get(info1)
-                if actionIndex is None: raise ValueError("Invalid value provided for action. Action given: " + str(info1))
-                if encounter_state["actionsLeft"][encounter_state["characterOrder"].index(info2)][actionIndex] <= 0: #If it already is 0, send a follow-up message
+            encounterDict, encounterFound = getEncounterInfo(interaction)
+            if not encounterFound: raise ValueError("encounter 'remove action' Error: Encounter could not be found.")
+            actionIndex = {"action": 0, "bonus action": 1, "reaction": 2}.get(info1)
+            if actionIndex is None: raise ValueError("Invalid value provided for action. Action given: " + str(info1))
+            if info2 is None: #If a character is entered
+                if encounterDict["actionsLeft"][encounterDict["characterOrder"].index(info2)][actionIndex] <= 0: #If it already is 0, send a follow-up message
                     message = await interaction.original_response()
-                    await message.edit(content=message.content + "\n:grey_exclamation: You did not have the required "+info1.title()+" to do that (effects still applied")
-                encounter_state["actionsLeft"][encounter_state["characterOrder"].index(info2)][actionIndex] -= 1
+                    await message.edit(content=message.content + "\n:grey_exclamation: You did not have the required "+info1.title()+" to do that (effects still applied)")
+                encounterDict["actionsLeft"][encounterDict["characterOrder"].index(info2)][actionIndex] -= 1
                 print("Removed " + info1.title() + " from " + info2.title() + ".")
+                writeEncounterInfo(interaction, encounterDict)
             else: #remove it from the current characters turn
                 print("No character entered, removing " + info1.title() + " from current indexed character.")
-                if info1 == "action": encounter_state["actionsLeft"][encounter_state["currentIndex"]][0] = max(encounter_state["actionsLeft"][encounter_state["currentIndex"]][0]-1, 0)
-                elif info1 == "bonus action": encounter_state["actionsLeft"][encounter_state["currentIndex"]][1] = 0
-                elif info1 == "reaction": encounter_state["actionsLeft"][encounter_state["currentIndex"]][2] = 0
-            await focusMessage.edit(view=ActionView())
+                encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex] = max(encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex]-1, 0)
+                writeEncounterInfo(interaction, encounterDict)
+                return(encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex])
+            #await interaction.response.edit(view=ActionView(encounterDict)) BROKEN: WANTS TO UPDATE ENCOUNTER INTERACTION (the one with buttons), CURRENT INTERACTION OBJECT IS THE ACTION (/attack or /cast)
         except Exception as e: print(str(e) + ". " + info1.title() + " could not be removed, is enounter started?")
         
 class ActionView(View):
-    def __init__(self):
-        super().__init__(timeout=600) #Max timeout time is 15mins (900s)\
+    def __init__(self, encounterDict):
+        super().__init__(timeout=600) #Max timeout time is 15mins (900s)
+        self.encounterDict = encounterDict
         for index, item in enumerate(self.children):
             if index != 3:
-                if encounter_state["actionsLeft"][encounter_state["currentIndex"]][index] <= 0:
+                if encounterDict["actionsLeft"][encounterDict["currentIndex"]][index] <= 0:
                     item.disabled = True
-        #Only allow the action buttons to be clickable if they have the relevant actions left.
+
+    async def on_timeout(self):
+        #Encounter no longer valid, remove it from database
+        DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+        DBCursor = DBConnection.cursor()
+        Query = "DELETE FROM encounters WHERE GuildID_FKey = ?"
+        DBCursor.execute(Query, (self.encounterDict["GuildID_FKey"],))
+        Query = "DELETE FROM guildIDs WHERE GuildID_PKey = ?"
+        DBCursor.execute(Query, (self.encounterDict["GuildID_FKey"],))
+        DBConnection.commit()
+        DBConnection.close()
+        
     @discord.ui.button(label="Action", style=ButtonStyle.primary)
     async def action(self, interaction: Interaction, button: Button):
         await interaction.response.send_message("Action button pressed, it has been marked as used.", ephemeral=True)
-        # Disable the button and update the view
-        button.disabled = True
+        if await encounter(interaction, "remove action", "action", "") <= 0: button.disabled = True
         await interaction.message.edit(view=self)
     @discord.ui.button(label="BonusAction", style=ButtonStyle.secondary)
     async def bonus_action(self, interaction: Interaction, button: Button):
         await interaction.response.send_message("Bonus action button pressed, it has been marked as used.", ephemeral=True)
-        # Disable the button and update the view
-        button.disabled = True
+        if await encounter(interaction, "remove action", "bonus action", "") <= 0: button.disabled = True
         await interaction.message.edit(view=self)
     @discord.ui.button(label="Reaction", style=ButtonStyle.success)
     async def reaction(self, interaction: Interaction, button: Button):
         await interaction.response.send_message("Reaction button pressed, it has been marked as used.", ephemeral=True)
-        # Disable the button and update the view
-        button.disabled = True
+        if await encounter(interaction, "remove action", "reaction", "") <= 0: button.disabled = True
         await interaction.message.edit(view=self)
     @discord.ui.button(label="End Turn", style=ButtonStyle.danger)
     async def end_turn(self, interaction: Interaction, button: Button):
         await interaction.response.send_message("You have ended your turn.", ephemeral=True)
-        await interaction.message.edit(view=None)  # Removes all buttons
+        await interaction.message.edit(view=None) #Removes all buttons
         await encounter(interaction, "end turn")
 
 # Slash command: /Apply
@@ -952,7 +1012,7 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, cond
         outputMessage += "\n" + str(condition) + " has also been applied"
         if int(condition_duration) > 0: outputMessage += " for " + str(int(condition_duration)) + " rounds"
         outputMessage += "."
-    if "TargetZeroHp" in returnString: outputMessage += "\n:skull: " +  target.title() + " has reached 0 HP."
+    if "TargetZeroHP" in returnString: outputMessage += "\n:skull: " + targetDict["name"] + " has reached 0HP."
     await interaction.response.send_message(outputMessage)
 apply.autocomplete("target")(autocomplete_characters)
 
