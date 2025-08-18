@@ -45,6 +45,7 @@ intents.messages = True #only used for DMs
 intents.message_content = True #only used for DMs
 
 #Declare global variables
+policyVersion = "0.1"
 #Below lists will be defined on bot launch and writing of files, to give autocomplete functionality to core commands.
 setOfAllAttacks = {}
 setOfAllCharacters = {}
@@ -72,13 +73,14 @@ class DnDBot(commands.Bot):
         startTime = time.time()
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS attacks (Name TEXT, Damage TEXT, DamageType TEXT, AttackClass TEXT, Properties TEXT, Conditions TEXT)")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS spells (Name TEXT, SpellLevel TEXT, CastTime TEXT, Damage TEXT, DamageType TEXT, Save TEXT, ExtraLvlDmg TEXT, OnFail TEXT, Conditions TEXT)")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS characters (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS charactersBK (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey))")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS userIDs (UserID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, UserID TEXT)")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS encounters (GuildID_FKey INTEGER, CharacterOrder TEXT, CharacterOwners TEXT, CurrentIndex INTEGER, ActionsLeft TEXT, FOREIGN KEY (GuildID_FKey) REFERENCES guildIDs(GuildID_PKey))")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS guildIDs (GuildID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, GuildID TEXT)")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS attacks (Name TEXT, Damage TEXT, DamageType TEXT, AttackClass TEXT, Properties TEXT, Conditions TEXT, UNIQUE(Name))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS spells (Name TEXT, SpellLevel TEXT, CastTime TEXT, Damage TEXT, DamageType TEXT, Save TEXT, ExtraLvlDmg TEXT, OnFail TEXT, Conditions TEXT, UNIQUE(Name))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS characters (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey), UNIQUE(UserID_FKey, Name))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS charactersBK (UserID_FKey INTEGER, Name TEXT, ClassLevel TEXT, Size TEXT, CreatureType TEXT, Race TEXT, Stats TEXT, StatsMod TEXT, HPMaxTempCurrent TEXT, AC TEXT, Speed TEXT, ProfBonus TEXT, Proficiencies TEXT, SavingThrows TEXT, DeathSaves TEXT, VulResImm TEXT, Conditions TEXT, FOREIGN KEY (UserID_FKey) REFERENCES userIDs(UserID_PKey), UNIQUE(UserID_FKey, Name))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS userIDs (UserID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, UserID TEXT, UNIQUE(UserID_PKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS encounters (GuildID_FKey INTEGER, CharacterOrder TEXT, CharacterOwners TEXT, CurrentIndex INTEGER, ActionsLeft TEXT, FOREIGN KEY (GuildID_FKey) REFERENCES guildIDs(GuildID_PKey), UNIQUE(GuildID_FKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS guildIDs (GuildID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, GuildID TEXT, UNIQUE(GuildID_PKey))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS policyAgreementLog (UserID TEXT, TimeStamp TEXT, PolicyVersion TEXT, Status TEXT, UNIQUE(UserID))")
         #Upload contents of CSV Files
         DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         Tables = DBCursor.fetchall()
@@ -314,7 +316,7 @@ async def autocomplete_attacks(interaction: discord.Interaction, current: str): 
     return [app_commands.Choice(name=attack, value=attack)for attack in setOfAllAttacks if current.title() in attack.title()][:25]
 
 # Slash command: /cast
-@client.tree.command(name="cast", description="Cast a spell at a target as a caster.")
+@client.tree.command(name="cast", description="For all spell attacks.")
 @app_commands.describe(spell="The spell to cast (if multible beams write one target for each)",
                        targets="The targets of the spell (seperated by commas)",
                        caster="The one casting the spell",
@@ -409,7 +411,7 @@ cast.autocomplete("caster")(autocomplete_characters)
 cast.autocomplete("targets")(autocomplete_characters)
 
 # Slash command: /Attack
-@client.tree.command(name="attack", description="For all Non-magical attacks")
+@client.tree.command(name="attack", description="For all weapon attacks")
 @app_commands.describe(attacker="The name of character who is attacking",
                        attack="The name of the attack/weapon you want to use",
                        target="The name of character who you want to attack",
@@ -600,14 +602,33 @@ async def action(interaction: discord.Interaction, character: str, action: str, 
 action.autocomplete("character")(autocomplete_characters)
 
 # Create character via DM (Direct Messages) structured conversation
-@client.tree.command(name="create_character", description="Create a character step-by-step for the encounter tracker.")
+@client.tree.command(name="create_character", description="Create a character step-by-step for use in all if not most other commands.")
 async def create_character(interaction: discord.Interaction):
-    await interaction.response.send_message("✅ Check your DMs to begin character creation.", ephemeral=True) #Sends an immediate message
+    buttonLink = Button(label="Tempestro Website", url="https://internetrat18.github.io/TempestroWebsite/TempestroWebpage.html")
+    buttonAgree = Button(style=discord.ButtonStyle.success, custom_id="btnAgree", label="I Agree")
+    policyView = View()
+    policyView.add_item(buttonLink)
+    policyView.add_item(buttonAgree)
+    await interaction.response.send_message("By creating a character you agree to the TOS and Privacy Policy outlined on the Tempestro website.\nTo confirm you have read and agreed to the TOS and Privacy Policy, press 'I Agree'.", ephemeral=True, view=policyView) #Sends an immediate message
+    #Wait for the user to agree
+    try: button_interaction: discord.Interaction = await client.wait_for("interaction", check=lambda btn: (btn.user.id == interaction.user.id and btn.data.get("custom_id") == "btnAgree"), timeout=300)
+    except Exception as e:
+        await interaction.followup.send(":hourglass: Timed out. Cancelling character creation.", ephemeral=True)
+        return()
+    #Store info in the database that the user has agreed.
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "INSERT OR IGNORE INTO policyAgreementLog VALUES (?, ?, ?, ?)"
+    localTime = str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + " AEDT(Format: YYYY-MM-DD HH-MM-SS)"
+    DBCursor.execute(Query, [interaction.user.id, localTime, policyVersion, "AGREED"])
+    DBConnection.commit()
+    DBConnection.close()
+    #Proceed with character creation
     user = interaction.user
+    await interaction.followup.send("✅ Check your DMs to begin character creation.", ephemeral=True)
     dmChannel = await user.create_dm()
     def check(m): #This filters messages so it must be from the inital user and in Tempestros DM's
         return m.author == user and m.channel == dmChannel 
-    
     try:
         #Name
         await dmChannel.send("What is your character's **Name**?")
@@ -669,7 +690,7 @@ async def create_character(interaction: discord.Interaction):
         speed = msgSpeed.content.strip()
         #Calculate proficiency bonus
         try:
-            level = int(ClassLevel.split()[-1])
+            level = int(ClassLevel.split(" ")[-1])
             if level >= 17: profBonus = 6
             elif level >= 13: profBonus = 5
             elif level >= 9: profBonus = 4
@@ -730,8 +751,8 @@ async def create_character(interaction: discord.Interaction):
         else:
             await dmChannel.send("❌ Character creation cancelled.")
 
-    except asyncio.TimeoutError:
-        await dmChannel.send(":hourglass: Timeout reached. Please run the command again if you wish to create your character (Any info entered has been voided).")
+    except Exception as e:
+        await dmChannel.send(":hourglass: Timeout reached (or an error occured). Please run the command again if you wish to create your character. Any info entered (regarding your character) has been voided.")
 
 class ConfirmCancelView(discord.ui.View):
     def __init__(self):
@@ -752,7 +773,7 @@ class ConfirmCancelView(discord.ui.View):
         self.stop()
 
 # Slash command: /Remove_character
-@client.tree.command(name="remove_character", description="Remove a character from the database by name.")
+@client.tree.command(name="remove_character", description="Remove a character from the database by name. You may only remove your characters.")
 @discord.app_commands.describe(character="The name of the character to remove.")
 async def remove_character(interaction: discord.Interaction, character: str):
     #'Sanitise' user inputs
@@ -776,8 +797,36 @@ async def remove_character(interaction: discord.Interaction, character: str):
     await interaction.response.send_message(outputMessage)
 remove_character.autocomplete("character")(autocomplete_characters)
 
+# Slash command: /privacy delete-me
+@client.tree.command(name="privacy_delete-me", description="Remove any and all trace of your data(userID). This will also remove all your characters.")
+async def privacy_delete(interaction: discord.Interaction):
+    dataPresent = True
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    Query = "SELECT * FROM policyAgreementLog WHERE UserID = ?"
+    DBCursor.execute(Query, (interaction.user.id,))
+    QueryResult = DBCursor.fetchone()
+    if QueryResult is None: dataPresent = True
+    Query = "UPDATE policyAgreementLog SET UserID = ?, Status = ? WHERE UserID = ?"
+    DBCursor.execute(Query, ("..."+str(QueryResult[0])[-5:], "REVOKED", interaction.user.id))
+    Query = "DELETE FROM userIDs WHERE UserID = ? RETURNING UserID_PKey"
+    print("privacy_delete Info: Query; " + Query)
+    DBCursor.execute(Query, (interaction.user.id,))
+    QueryResult = DBCursor.fetchone()
+    print("privacy_delete Info: Query returned; " + str(QueryResult))
+    UserID_PKey = QueryResult[0]
+    print(str(UserID_PKey))
+    Query = "DELETE FROM characters WHERE UserID_FKey = ?"
+    DBCursor.execute(Query, (UserID_PKey,))
+    Query = "DELETE FROM charactersBK WHERE UserID_FKey = ?"
+    DBCursor.execute(Query, (UserID_PKey,))
+    DBConnection.commit()
+    DBConnection.close()
+    if not dataPresent: await interaction.response.send_message("Your data was not present in the database. Attempted removal reguardless.")
+    else: await interaction.response.send_message("Your data has been removed/deleted from the database. All your characters have also been removed/deleted as a result.")
+    
 # Slash command: /Reset
-@client.tree.command(name="reset", description="This command will reset the character database using the backup.")
+@client.tree.command(name="reset", description="This command will reset your characters using the backup (original state).")
 async def reset(interaction: discord.Interaction):
     try:
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
@@ -788,8 +837,8 @@ async def reset(interaction: discord.Interaction):
         TableBKHeadersFormated = "charactersBK." + ", charactersBK.".join(TableHeaders)
         GuildUserIDs = [str(user.id) for user in interaction.guild.members]
         QuestionMarks = ",".join("?" * len(GuildUserIDs))
-        Query = "UPDATE characters SET ("+TableHeadersFormated+") = (SELECT "+TableBKHeadersFormated+" FROM charactersBK WHERE charactersBK.UserID_FKey = characters.UserID_FKey AND charactersBK.Name = characters.Name) WHERE UserID_FKey IN (SELECT userIDs.UserID_PKey FROM userIDs WHERE userIDs.UserID IN ("+QuestionMarks+"))"
-        DBCursor.execute(Query, GuildUserIDs)
+        Query = "UPDATE characters SET ("+TableHeadersFormated+") = (SELECT "+TableBKHeadersFormated+" FROM charactersBK WHERE charactersBK.UserID_FKey = characters.UserID_FKey AND charactersBK.Name = characters.Name) WHERE UserID_FKey IN (SELECT userIDs.UserID_PKey FROM userIDs WHERE userIDs.UserID = ?)"
+        DBCursor.execute(Query, (interaction.user.id,))
         DBConnection.commit()
         DBConnection.close()
         await interaction.response.send_message("✅ Character database has been reset to the backup.")
@@ -1059,7 +1108,7 @@ async def roll(interaction: discord.Interaction, dice: str, modifier: int = 0):
     await interaction.response.send_message(outputMessage + "\n**Total: " + str(int(totalResult)) + "**")
 
 # Slash command: /Roll_ability
-@client.tree.command(name="roll_ability", description="This command will reset the character database using the backup.")
+@client.tree.command(name="roll_ability", description="To roll an ability check or saving throw.")
 @app_commands.describe(roller="Character that is making the ability check.", ability="The ability you want to check, weather it be a skill or stat.", advantage_override="Give (dis)advantage?", passive="If it should return the average roll. (False by defult)")
 @app_commands.choices(
     advantage_override=[app_commands.Choice(name="Dis-advantage", value="disadvantage"),
@@ -1334,7 +1383,6 @@ def apply_condition_effects(interaction: discord.Interaction, charDict: dict, co
     elif "speed." in condition: charDict["speed"] += int(condition[0:condition.index("speed")])
     return(charDict)
     #ADVANCED: MAKE THIS HAVE THE DICT TEXT (e.g. speed) IN THE CONDITION (for now, this works fine)
-
 #Ideas to add:
     """
 REJECTED ~~Add Fuzzy Matching with difflib (so minor spelling mistakes don't void a command)~~ This idea is replaced with an autocorrect feature, wont correct spelling errors, but guides the user on input.
@@ -1365,6 +1413,11 @@ DONE ~~ALSO DELETE THE USER ID FROM THE USERID TABLE IF NO CHARACTERS REFERENCE 
 DONE ~~So far, only the autocomplete is matching users with their characters. A similar thing needs to be done with getting character info (if they're getting info for a user's character that's not in that guild, fail it.)~~
 DONE ~~In character creation, allow users to create characters with the same name as other users (a single user must have unique character names)~~
 Low Priority (for now): Fully encrypt the UserIDs table (or at least the ID column) it should be secure enough already as only the hosting PC (my PC) has the DNDatabase file, but it does help.
+DONE ~~Make multible encounters able to be run at once (on differnt servers)~~
+DONE ~~/reset resets every character, even ones not accociated wit the guild that the command was run from~. It should only resets characters that the guild 'owns'~~
+DONE ~~Add a /privacy delete-me command to remove any and all userIDs sored by that user (along with their characters/agreement log)~~
+DONE ~~Add an INSERT command to chracter creation to record their accepting of the policy agrements~~
+DONE ~~add a global varaible PolicyVersion to enable quickly changing of policy versions (so I wont have to go through te code later to update the number, also future proof)~~
     """
 # Start the bot
 client.run("MY_TOKEN")
