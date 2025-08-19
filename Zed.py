@@ -21,7 +21,7 @@ Order of functions+/commands:
 >/Remove
 >/Roll
 >/Roll_ability
->Function Ability_check 
+>Function Ability_check
 >Function Roll_dice
 >Function Remove_logic (conditions)
 >Function updateAutoComplteLists
@@ -80,13 +80,13 @@ class DnDBot(commands.Bot):
         DBCursor.execute("CREATE TABLE IF NOT EXISTS userIDs (UserID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, UserID TEXT, UNIQUE(UserID_PKey))")
         DBCursor.execute("CREATE TABLE IF NOT EXISTS encounters (GuildID_FKey INTEGER, CharacterOrder TEXT, CharacterOwners TEXT, CurrentIndex INTEGER, ActionsLeft TEXT, FOREIGN KEY (GuildID_FKey) REFERENCES guildIDs(GuildID_PKey), UNIQUE(GuildID_FKey))")
         DBCursor.execute("CREATE TABLE IF NOT EXISTS guildIDs (GuildID_PKey INTEGER PRIMARY KEY AUTOINCREMENT, GuildID TEXT, UNIQUE(GuildID_PKey))")
-        DBCursor.execute("CREATE TABLE IF NOT EXISTS policyAgreementLog (UserID TEXT, TimeStamp TEXT, PolicyVersion TEXT, Status TEXT, UNIQUE(UserID))")
+        DBCursor.execute("CREATE TABLE IF NOT EXISTS policyAgreementLog (UserID TEXT, TimeStamp TEXT, PolicyVersion TEXT, Status TEXT, UNIQUE(UserID, PolicyVersion))")
         #Upload contents of CSV Files
         DBCursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         Tables = DBCursor.fetchall()
         csvFilesToUpload = ["attacks", "spells"]
         for fileName in csvFilesToUpload:
-            with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = file.readlines()
+            with open("Zed\\" + fileName + ".csv", encoding='utf-8') as file: fileLines = set(file.readlines()[1:])
             for line in fileLines:
                 row = line.strip().split(",")
                 placeholders = ", ".join("?" for _ in row)
@@ -219,7 +219,7 @@ def writeEncounterInfo(interaction: discord.Interaction, encounterDict: dict):
     DBCursor.execute(Query, (encounterDict["GuildID_FKey"], "|".join(encounterDict["characterOrder"]), "|".join(encounterDict["characterOwners"]), int(encounterDict["currentIndex"]), "|".join(str(sublist) for sublist in encounterDict["actionsLeft"]), interaction.guild.id))
     DBConnection.commit()
     DBConnection.close()
-    
+
 #All functions that write to character files call this function.
 #Excetions to this include; /Reset
 #Others that read database; updateAutocompleteLists()
@@ -304,16 +304,15 @@ async def autocomplete_spells(interaction: discord.Interaction, current: str): #
 async def autocomplete_characters(interaction: discord.Interaction, current: str): #Autocomplete for caster/attacker/roller
     DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
     DBCursor = DBConnection.cursor()
-    #setOfAllServerCharacters = setOfAllCharacters
     GuildUserIDs = [str(user.id) for user in interaction.guild.members]
     QuestionMarks = ",".join("?" * len(GuildUserIDs))
     Query = "SELECT Name FROM characters JOIN userIDs ON characters.UserID_FKey = userIDs.UserID_PKey WHERE userIDs.UserID IN ("+QuestionMarks+")"
     DBCursor.execute(Query, GuildUserIDs)
     setOfAllReleventCharacters = {row[0] for row in DBCursor.fetchall()}
     DBConnection.close()
-    return [app_commands.Choice(name=caster, value=caster) for caster in setOfAllReleventCharacters if current.title() in caster.title()][:25]
+    return [app_commands.Choice(name=character, value=character) for character in setOfAllReleventCharacters if current.title() in character.title()][:25]
 async def autocomplete_attacks(interaction: discord.Interaction, current: str): #Autocomplete for targets (only the first target)
-    return [app_commands.Choice(name=attack, value=attack)for attack in setOfAllAttacks if current.title() in attack.title()][:25]
+    return [app_commands.Choice(name=attack, value=attack) for attack in setOfAllAttacks if current.title() in attack.title()][:25]
 
 # Slash command: /cast
 @client.tree.command(name="cast", description="For all spell attacks.")
@@ -336,8 +335,8 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     upcast_level = min(9, upcast_level)
     #Setup some variables
     targetDict, casterDict, spellDict = {}, {}, {}
-    targetFound, casterFound, spellFound, spellSaved, spellCrit, critImmune = False, False, False, False, False, True
-    spellRollToHit, spellAttackBonus, spellSaveDC, damageTotal, spellBonusToHit, spellBonusToDamage = 0, 0, 0, 0, hit_modifier, damage_modifier
+    targetFound, casterFound, spellFound, spellSaved, spellCrit, critImmune, saveReversed = False, False, False, False, False, False, False
+    spellRollToHit, spellAttackBonus, spellSaveDC, damageTotal, spellBonusToHit, spellBonusToDamage, spellRollToHitOverride = 0, 0, 0, 0, hit_modifier, damage_modifier, 0
     targetDicts, spellDamages, spellDamageTypes, casterConditionsToApply, targetConditionsToApply = [], [], [], [], []
     spellCastingAbility, spellFeedbackString, applyEffectsFeedback, outputMessage, spellHitLine = "", "", "", "", ""
     targetsList = str(targets+",").split(",")[:-1] #List of Strings
@@ -376,29 +375,28 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     spellAbilityMod = casterDict["statMods"][["STR", "DEX", "CON", "INT", "WIS", "CHA"].index(spellCastingAbility)]
     spellAttackBonus = casterDict["profBonus"] + spellAbilityMod
     spellSaveDC = 8 + casterDict["profBonus"] + spellAbilityMod
-    if spellDict["save"] == "ac": critImmune = False
     #For each target:
     for index, targetDict in enumerate(targetDicts):
+        #Change save requirements as needed
         if spellDict["save"] == "ac": spellSaveDC = targetDict["AC"]
-        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]:
-            spellBonusToHit += targetDict["statMods"][["str", "dex", "con", "int", "wis", "cha"].index(spellDict["save"])]
-            spellBonusToHit += targetDict["profBonus"] if any(stat in targetDict["savingThrows"] for stat in ["str", "dex", "con", "int", "wis", "cha"]) else 0
+        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellBonusToHit, spellRollToHitOverride, critImmune, saveReversed = 0, ability_check(interaction, casterDict["name"], "none", spellDict["save"], advantage_override)[0], True, True
         #Roll damage (if relevent)
-        spellDamages, spellDamageTypes, spellRollToHit, spellSaved, spellCrit, spellFeedbackString = calc_damage(interaction, casterDict["name"], targetDict["name"], spellDict["damageDice"], spellDict["damageType"], spellBonusToHit, spellBonusToDamage, spellSaveDC, 0, spellDict["onFail"], advantage_override, not critImmune, 0)
+        spellDamages, spellDamageTypes, spellRollToHit, spellSaved, spellCrit, spellFeedbackString = calc_damage(interaction, casterDict["name"], targetDict["name"], spellDict["damageDice"], spellDict["damageType"], spellBonusToHit, spellBonusToDamage, spellSaveDC, 0, spellDict["onFail"], advantage_override, not critImmune, spellRollToHitOverride, critImmune)
         if spellDict["save"] == "ac": spellHitLine = ("❌" if spellSaved else "✅") + " ("+str(spellRollToHit)+"Hit vs "+str(spellSaveDC)+"AC)"
-        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellHitLine = ("❌" if not spellSaved else "✅") + " ("+str(spellRollToHit)+spellDict["save"].upper()+" vs "+str(spellSaveDC)+"DC)"
+        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellHitLine = ("❌" if spellSaved else "✅") + " ("+str(spellRollToHit)+spellDict["save"].upper()+" vs "+str(spellSaveDC)+"DC)"
         else: spellSaved, spellCrit, spellRollToHit = False, False, 0
         #Apply effects
         damageTotal += sum(spellDamages)
         if not spellSaved: targetConditionsToApply += [condition for condition in spellDict["conditions"] if not condition.startswith("#")]
-        if not spellSaved: casterConditionsToApply += [condition for condition in spellDict["conditions"] if condition.startswith("#")]
+        if not spellSaved: casterConditionsToApply += [condition+"|"+spellDict["name"]+"|"+targetDict["name"] for condition in spellDict["conditions"] if condition.startswith("#")]
         applyEffectsFeedback = apply_effects(interaction, targetDict["name"], damageTotal, targetConditionsToApply)
         apply_effects(interaction, casterDict["name"], 0, casterConditionsToApply)
         #Format output string
-        outputMessage += "*" + casterDict["name"].title() + "* has casted *" + spellDict["name"].title() + "* targeting *" + targetDict["name"].title() + "*"
+        outputMessage += "*" + casterDict["name"].title() + "* has cast *" + spellDict["name"].title() + "* targeting *" + targetDict["name"].title() + "*"
         if spellHitLine != "":outputMessage += "\n:dart: Did this spell hit?: " + spellHitLine
         if spellCrit: outputMessage += "\n:tada: This spell attack CRITICAL HIT!"
         if damageTotal >= 1: outputMessage += "\n:crossed_swords: The spell delt: **" + str(damageTotal) + "Dmg** (" + " + ".join(str(spellDamages[i]) + str(spellDamageTypes[i]).title() for i in range(len(spellDamages))) + ")"
+        elif damageTotal < 0: outputMessage += "\n:heart: The spell healed: **" + str(damageTotal*-1) + "Hp** (" + " + ".join(str(spellDamages[i]*-1) + str(spellDamageTypes[i]).title() for i in range(len(spellDamages))) + ")"
         outputMessage += "\n\n"
         #'Reset' Varaibles in here
         damageTotal = 0
@@ -459,6 +457,9 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     if "grappling" in attackerDict["conditions"] and (attackFound or secAttackFound):
         await interaction.response.send_message("Attacking while grappling a creature is not allowed. You may use /remove to stop grappling")
         return()
+    if "secondaryattack" in str(attackDict["properties"]):
+        await interaction.response.send_message("The entered main attack may only be used as a secondary/off-hand attack.")
+        return()
     if secondary_attack != "none":
         if len(secAttackDict["damageType"]) > 1 and len(secAttackDict["damageDice"]) !=  len(secAttackDict["damageType"]):
             await interaction.response.send_message("The off-hand attack has invalid damage format.")
@@ -503,11 +504,11 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
             bonusToDmg, secBonusToDmg = bonusToDmg + roll_dice(1, 6), secBonusToDmg + roll_dice(1, 6)
             extraOutput += "\n:book: Special effect 'Hunters Mark' triggered! (+1d6 to attack(s) damage)"
     #Roll damage (for normal attacks)
-    if "special" not in attackDict["properties"]:
+    if "special" not in str(attackDict["properties"]):
         attackDamages, attackDamageTypes, attackRollToHit, attackSaved, attackCrit, attackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], attackDict["damageDice"], attackDict["damageType"], bonusToHit, bonusToDmg, targetDict["AC"], 0, "miss", advantage_override)
         attackRollToHitString, attackTargetDCString, actionsToRemove = str(attackRollToHit) + "Hit", str(targetDict["AC"]) + "AC", actionsToRemove+"Action"
     if secAttackFound:
-        if "special" not in secAttackDict["properties"]:
+        if "special" not in str(secAttackDict["properties"]):
             if secAttackFound: secAttackDamages, secAttackDamageTypes, secAttackRollToHit, secAttackSaved, secAttackCrit, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], secAttackDict["damageDice"], secAttackDict["damageType"], secBonusToHit, secBonusToDmg, targetDict["AC"], 0, "miss", advantage_override)
             if secAttackFound: secAttackRollToHitString, secAttackTargetDCString, actionsToRemove = str(secAttackRollToHit) + "Hit", str(targetDict["AC"]) + "AC", actionsToRemove+"Bonusaction"
     #Roll damage (for special attacks)
@@ -515,7 +516,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
         attackRollToHit, extraEffects = ability_check(interaction, attackerDict["name"], "DEX", "none")
         if 8+bonusToDmg < attackRollToHit: attackSaved = True
         attackRollToHitString, attackTargetDCString, actionsToRemove = str(8+bonusToDmg) + "Dex", str(attackRollToHit) + "Dex", actionsToRemove+"Action"
-    elif attackDict["name"] == "grapple": 
+    elif attackDict["name"] == "grapple":
         if ability_check(interaction, targetDict["name"], "STR", "athletics", "none", True) >= ability_check(interaction, targetDict["name"], "DEX", "acrobatics", "none", True): #Determine if the target is better at Athletics or Acrobatics
             (attackRollToHit, extraEffects), (secAttackRollToHit, _), preferredSkill = ability_check(interaction, attackerDict["name"], "STR", "athletics"), ability_check(interaction, targetDict["name"], "STR", "athletics"), "Athletics"
         else: (attackRollToHit, extraEffects), (secAttackRollToHit, _), preferredSkill = ability_check(interaction, attackerDict["name"], "STR", "athletics"), ability_check(interaction, targetDict["name"], "DEX", "acrobatics"), "Acrobatics"
@@ -523,8 +524,11 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
         attackRollToHitString, attackTargetDCString, actionsToRemove = str(attackRollToHit) + "Athletics", str(secAttackRollToHit) + preferredSkill, actionsToRemove+"Action"
     if secAttackFound:
         if secAttackDict["name"] == "sneak attack":
-            secAttackDamages, secAttackDamageTypes, _, _, _, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], [str(int((attackerDict["level"]+1)/2))+"d6"], attackDict["damageType"], 0, 0, targetDict["AC"], 0, "miss", "none", True, attackRollToHit)
-            attackDamages, attackDamageTypes = attackDamages+secAttackDamages, attackDamageTypes+secAttackDamageTypes
+            secAttackDamages, secAttackDamageTypes, _, _, _, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], [str(int(int(attackerDict["level"])+1)/2)+"d6"], attackDict["damageType"], bonusToHit, 0, targetDict["AC"], 0, "miss", "none", attackCrit, attackRollToHit)
+            secAttackFound = False
+        if secAttackDict["name"].startswith("divine smite"):
+            if targetDict["race"] == "undead" or targetDict["race"] == "fiend": secAttackDict["damageDice"][0] = str(int(secAttackDict["damageDice"][0].split("d")[0])+1)+secAttackDict["damageDice"][0].split("d")[1]
+            secAttackDamages, secAttackDamageTypes, _, _, _, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], secAttackDict["damageDice"], secAttackDict["damageType"], bonusToHit, 0, targetDict["AC"], 0, "miss", "none", attackCrit, attackRollToHit)
             secAttackFound = False
     #Apply effects
     combinedAttackDamages, combinedAttackDamageTypes = attackDamages+secAttackDamages, attackDamageTypes+secAttackDamageTypes
@@ -604,31 +608,41 @@ action.autocomplete("character")(autocomplete_characters)
 # Create character via DM (Direct Messages) structured conversation
 @client.tree.command(name="create_character", description="Create a character step-by-step for use in all if not most other commands.")
 async def create_character(interaction: discord.Interaction):
-    buttonLink = Button(label="Tempestro Website", url="https://internetrat18.github.io/TempestroWebsite/TempestroWebpage.html")
-    buttonAgree = Button(style=discord.ButtonStyle.success, custom_id="btnAgree", label="I Agree")
-    policyView = View()
-    policyView.add_item(buttonLink)
-    policyView.add_item(buttonAgree)
-    await interaction.response.send_message("By creating a character you agree to the TOS and Privacy Policy outlined on the Tempestro website.\nTo confirm you have read and agreed to the TOS and Privacy Policy, press 'I Agree'.", ephemeral=True, view=policyView) #Sends an immediate message
-    #Wait for the user to agree
-    try: button_interaction: discord.Interaction = await client.wait_for("interaction", check=lambda btn: (btn.user.id == interaction.user.id and btn.data.get("custom_id") == "btnAgree"), timeout=300)
-    except Exception as e:
-        await interaction.followup.send(":hourglass: Timed out. Cancelling character creation.", ephemeral=True)
-        return()
-    #Store info in the database that the user has agreed.
+    userLogAgreed, userLogOutdated = False, False
+    #Check if the user as agreed to the TOS & Privacy Policy
     DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
     DBCursor = DBConnection.cursor()
-    Query = "INSERT OR IGNORE INTO policyAgreementLog VALUES (?, ?, ?, ?)"
-    localTime = str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + " AEDT(Format: YYYY-MM-DD HH-MM-SS)"
-    DBCursor.execute(Query, [interaction.user.id, localTime, policyVersion, "AGREED"])
-    DBConnection.commit()
+    Query = "SELECT PolicyVersion, Status FROM policyAgreementLog WHERE UserID = ?"
+    DBCursor.execute(Query, (interaction.user.id,))
+    QueryResult = DBCursor.fetchone()
+    if QueryResult is not None: userLogAgreed = True if QueryResult[1] == "AGREED" else False
+    if QueryResult is not None: userLogOutdated = True if QueryResult[0] != str(policyVersion) else False
+    #If no log, or user has since 'REVOKED' their agreement, ask them to read and agree before creating a character.
+    if QueryResult is None or not userLogAgreed or userLogOutdated:
+        buttonLink, buttonAgree, policyView = Button(label="Tempestro Website", url="https://internetrat18.github.io/TempestroWebsite/TempestroWebpage.html"), Button(style=discord.ButtonStyle.success, custom_id="btnAgree", label="I Agree"), View()
+        policyView.add_item(buttonLink).add_item(buttonAgree)
+        await interaction.response.send_message(("The TOS and Privacy Policy have updated since you last read them.\n" if userLogOutdated else "")+"To create a character you must agree to the TOS and Privacy Policy outlined on the Tempestro website"+".\nTo confirm you have read and agreed to the TOS and Privacy Policy, press 'I Agree'.", ephemeral=True, view=policyView) #Sends an immediate message
+        #Wait for the user to agree
+        try: button_interaction: discord.Interaction = await client.wait_for("interaction", check=lambda btn: (btn.user.id == interaction.user.id and btn.data.get("custom_id") == "btnAgree"), timeout=300)
+        except Exception as e:
+            DBConnection.close()
+            await interaction.followup.send(":hourglass: Timed out. Cancelling character creation.", ephemeral=True)
+            return()
+        #Store info in the database that the user has agreed.
+        Query = "INSERT OR IGNORE INTO policyAgreementLog VALUES (?, ?, ?, ?)"
+        localTime = str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + " AEDT(Format: YYYY-MM-DD HH-MM-SS)"
+        DBCursor.execute(Query, [interaction.user.id, localTime, str(policyVersion), "AGREED"])
+        DBConnection.commit()
+        await interaction.followup.send("✅ Check your DMs to begin character creation.", ephemeral=True)
+    else: await interaction.response.send_message("✅ Check your DMs to begin character creation.", ephemeral=True)
     DBConnection.close()
     #Proceed with character creation
     user = interaction.user
-    await interaction.followup.send("✅ Check your DMs to begin character creation.", ephemeral=True)
+
+
     dmChannel = await user.create_dm()
     def check(m): #This filters messages so it must be from the inital user and in Tempestros DM's
-        return m.author == user and m.channel == dmChannel 
+        return m.author == user and m.channel == dmChannel
     try:
         #Name
         await dmChannel.send("What is your character's **Name**?")
@@ -716,7 +730,7 @@ async def create_character(interaction: discord.Interaction):
                     profSelected.append(skill)
         skillProficiencies = "|".join(profSelected)
         #Weapon Proficiencies
-        await dmChannel.send("Select your **Weapon Proficiencies** by replying with numbers separated by commas. Add individual weapons at the end using their name as in the Players Handbook.\nIf you have no weapon proficiencies, enter 'None'.\n1. Simple Melee\n2. Simple Ranged\n3. Martial Melee\n4. Martial Ranged\nExample: 1,2,Rapier,Heavy crossbow")
+        await dmChannel.send("Select your **Weapon Proficiencies** by replying with numbers separated by commas. Add individual weapons at the end using their name as in the Players Handbook(2024).\nIf you have no weapon proficiencies, enter 'None'.\n1. Simple Melee\n2. Simple Ranged\n3. Martial Melee\n4. Martial Ranged\nExample: 1,2,Rapier,Heavy crossbow")
         msgWeapons = await client.wait_for('message', check=check, timeout=300)
         weaponProficiencies = msgWeapons.content.strip()
         weaponProficiencies = weaponProficiencies.replace("1", "SM")
@@ -740,7 +754,7 @@ async def create_character(interaction: discord.Interaction):
         #DEV LINE characterInfoList = name.split(",")
         characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
-        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, you can run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
+        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, it is encouraged to run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
@@ -806,25 +820,25 @@ async def privacy_delete(interaction: discord.Interaction):
     Query = "SELECT * FROM policyAgreementLog WHERE UserID = ?"
     DBCursor.execute(Query, (interaction.user.id,))
     QueryResult = DBCursor.fetchone()
-    if QueryResult is None: dataPresent = True
-    Query = "UPDATE policyAgreementLog SET UserID = ?, Status = ? WHERE UserID = ?"
-    DBCursor.execute(Query, ("..."+str(QueryResult[0])[-5:], "REVOKED", interaction.user.id))
-    Query = "DELETE FROM userIDs WHERE UserID = ? RETURNING UserID_PKey"
-    print("privacy_delete Info: Query; " + Query)
-    DBCursor.execute(Query, (interaction.user.id,))
-    QueryResult = DBCursor.fetchone()
-    print("privacy_delete Info: Query returned; " + str(QueryResult))
-    UserID_PKey = QueryResult[0]
-    print(str(UserID_PKey))
-    Query = "DELETE FROM characters WHERE UserID_FKey = ?"
-    DBCursor.execute(Query, (UserID_PKey,))
-    Query = "DELETE FROM charactersBK WHERE UserID_FKey = ?"
-    DBCursor.execute(Query, (UserID_PKey,))
-    DBConnection.commit()
-    DBConnection.close()
-    if not dataPresent: await interaction.response.send_message("Your data was not present in the database. Attempted removal reguardless.")
-    else: await interaction.response.send_message("Your data has been removed/deleted from the database. All your characters have also been removed/deleted as a result.")
-    
+    if QueryResult is None: dataPresent = False
+    try: #Will error is data is present in the log, but user has not made characters.
+        Query = "DELETE FROM policyAgreementLog WHERE UserID = ?"
+        DBCursor.execute(Query, (interaction.user.id,))
+        Query = "DELETE FROM userIDs WHERE UserID = ? RETURNING UserID_PKey"
+        DBCursor.execute(Query, (interaction.user.id,))
+        QueryResult = DBCursor.fetchone()
+        UserID_PKey = QueryResult[0]
+        Query = "DELETE FROM characters WHERE UserID_FKey = ?"
+        DBCursor.execute(Query, (UserID_PKey,))
+        Query = "DELETE FROM charactersBK WHERE UserID_FKey = ?"
+        DBCursor.execute(Query, (UserID_PKey,))
+    except Exception: pass
+    finally:
+        DBConnection.commit()
+        DBConnection.close()
+    if not dataPresent: await interaction.response.send_message("Your data was not present in the database. Attempted removal reguardless.", ephemeral=True)
+    else: await interaction.response.send_message("Your data has been removed/deleted from the database. All your characters have also been removed/deleted as a result.", ephemeral=True)
+
 # Slash command: /Reset
 @client.tree.command(name="reset", description="This command will reset your characters using the backup (original state).")
 async def reset(interaction: discord.Interaction):
@@ -848,8 +862,10 @@ async def reset(interaction: discord.Interaction):
 
 # Slash command: /Create encounter
 @client.tree.command(name="create_encounter", description="To create an encounter, usually only used by the DM/GM")
-@app_commands.describe(characters="The name of all characters (+monsters) you wish to be in the encounter, in turn order. Separate each character by a comma(,).", character_owners="The name(or @'s) of personnel who are owners of the characters. Have them in the same order as the characters entered.")
-async def create_encounter(interaction: discord.Interaction, characters: str, character_owners: str):
+@app_commands.describe(character_owners="The name(or @'s) of personnel who are owners of the characters. Have them in the same order as the characters entered.",
+                       characters="The name of all characters (+monsters) you wish to be in the encounter, in turn order. Separate each character by a comma(,).",
+                       roll_initative="If you have not already rolled initative, Tempestro will roll it and determine the turn order for you.")
+async def create_encounter(interaction: discord.Interaction, character_owners: str, characters: str, roll_initative: bool = False):
     #'Sanitise' the user inputs (and transfer to list type)
     characterList = characters.split(",")
     characterList = [s.lower() for s in characterList]
@@ -861,6 +877,7 @@ async def create_encounter(interaction: discord.Interaction, characters: str, ch
     index = 0
     charcterDict = {}
     characterFound = False
+    #Roll initative and reorder 'characterList' + 'character_owners' YET TODO
     #Find characters full names (and if they exist)
     for index, character in enumerate(characterList):
         characterDict, characterFound = getCharacterInfo(interaction, character)
@@ -987,7 +1004,7 @@ async def encounter(interaction, command: str, info1=None, info2=None):
                 return(encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex])
             #await interaction.response.edit(view=ActionView(encounterDict)) BROKEN: WANTS TO UPDATE ENCOUNTER INTERACTION (the one with buttons), CURRENT INTERACTION OBJECT IS THE ACTION (/attack or /cast)
         except Exception as e: print(str(e) + ". " + info1.title() + " could not be removed, is enounter started?")
-        
+
 class ActionView(View):
     def __init__(self, encounterDict):
         super().__init__(timeout=600) #Max timeout time is 15mins (900s)
@@ -1007,7 +1024,7 @@ class ActionView(View):
         DBCursor.execute(Query, (self.encounterDict["GuildID_FKey"],))
         DBConnection.commit()
         DBConnection.close()
-        
+
     @discord.ui.button(label="Action", style=ButtonStyle.primary)
     async def action(self, interaction: Interaction, button: Button):
         await interaction.response.send_message("Action button pressed, it has been marked as used.", ephemeral=True)
@@ -1088,7 +1105,7 @@ async def remove(interaction: discord.Interaction, target: str, condition: str =
 @app_commands.describe(dice="the dice you wish to roll, separated by '+'. e.g. 1d20+4d6", modifier="Any positive (or negative) modifier you wish to add. e.g. +12 or -5")
 async def roll(interaction: discord.Interaction, dice: str, modifier: int = 0):
     totalResult = int(modifier)
-    outputMessage = "Rolling: " + dice 
+    outputMessage = "Rolling: " + dice
     if "+" not in dice: diceArguments = 0
     else: diceArguments = len(dice.split("+"))-1
     for i in range(diceArguments+1):
@@ -1174,7 +1191,7 @@ def ability_check(interaction: discord.Interaction, roller: str, abilityStat: st
         advantage = True if condition.startswith("+adv"+abilityCheck+"save") else False
         disadvantage = True if condition.startswith("-adv"+abilityCheck+"save") else False
     advantage = True if advantage_override == "advantage" else False
-    disadvantage = True if advantage_override == "advantage" else False
+    disadvantage = True if advantage_override == "disadvantage" else False
     #Roll the ability and return the result
     abilityRoll = roll_dice(1, 20, modifier)
     if advantage and not disadvantage: abilityRoll, extraEffects = max(abilityRoll, roll_dice(1, 20, modifier)), extraEffects+"Disadvantage"
@@ -1206,7 +1223,7 @@ def remove_logic(interaction: discord.Interaction, targetDict: dict, condition: 
             conditionFound = True
     #Remove its bonuses (if applicable)
             apply_condition_effects(interaction, targetDict, condition, "-")
-        if condition.startswith("concentration"): #If were removing concentration, we also need to remove the spell effects 
+        if condition.startswith("concentration"): #If were removing concentration, we also need to remove the spell effects
             concentratingSpell, concentratingSpellTarget = condition.split(":")[1], condition.split(":")[2]
             spellDict, spellFound = getSpellInfo(concentratingSpell) #Get the spell info
             concentratingSpellConditions = set([cond for cond in spellDict["conditions"] if not cond.startswith("#")]) #Remove self inflicted conditions
@@ -1241,9 +1258,9 @@ def updateAutocompleteLists():
         if fileName == "attacks": setOfAllAttacks = QueryResult
         elif fileName == "characters": setOfAllCharacters = QueryResult
         elif fileName == "spells": setOfAllSpells = QueryResult
-        
+
 #function to roll damage (accounting for crits, resistances, immunities and vulnerabilities)
-def calc_damage(interaction: discord.Interaction, attacker: str, target: str, damageDice: list, damageType: list, bonusToHit: int, bonusToDmg: int, contestDC: int, contestDCMod: int, onSave: str = "none", advantage_override: str = "none", applyCrits: bool = True, rollToHitOverride: int = 0) -> tuple[list, list, int, bool, bool, str]:
+def calc_damage(interaction: discord.Interaction, attacker: str, target: str, damageDice: list, damageType: list, bonusToHit: int, bonusToDmg: int, contestDC: int, contestDCMod: int, onSave: str = "none", advantage_override: str = "none", applyCrits: bool = True, rollToHitOverride: int = 0, savedReversed: bool = False) -> tuple[list, list, int, bool, bool, str]:
     #'Sanatise' inputs
     attacker = attacker.strip().lower()
     target = target.strip().lower()
@@ -1253,7 +1270,6 @@ def calc_damage(interaction: discord.Interaction, attacker: str, target: str, da
     contestDCMod = max(contestDCMod, -contestDC)
     onSave = onSave.strip().lower()
     advantage_override = advantage_override.strip().lower()
-    rollToHitOverride = min(rollToHitOverride, 20)
     rollToHitOverride = max(rollToHitOverride, 0)
     #Setup some variables
     saved, crit, advantage, disadvantage = False, False, False, False
@@ -1287,17 +1303,20 @@ def calc_damage(interaction: discord.Interaction, attacker: str, target: str, da
     advantage, disadvantage = True if advantage_override == "advantage" else advantage, True if advantage_override == "disadvantage" else disadvantage
     #Roll to hit, taking into account (dis)advantage
     rollToHit = rollToHitOverride if rollToHitOverride != 0 else roll_dice(1, 20, bonusToHit)
-    if (advantage or disadvantage) and not (advantage and disadvantage): alternateRollToHit = roll_dice(1, 20, bonusToHit)
+    if (advantage or disadvantage) and not (advantage and disadvantage) and rollToHitOverride == 0: alternateRollToHit = roll_dice(1, 20, bonusToHit)
     if advantage and not disadvantage: rollToHit, feedbackString = max(rollToHit, alternateRollToHit), feedbackString+"Advantage"
     if disadvantage and not advantage: rollToHit, feedbackString = min(rollToHit, alternateRollToHit), feedbackString+"Disadvantage"
-    print("^Roll to hit(s)^")
-    crit = True if rollToHit-bonusToHit==20 and not "crit" in targetDict["immunities"] else False
+    print("^Roll to hit(s)^ Applying crits? " + str(applyCrits))
+    crit = True if rollToHit-bonusToHit==20 and not "crit" in targetDict["immunities"] and applyCrits else False
     saved = True if rollToHit<contestDC+contestDCMod and not crit else False
+    if savedReversed: saved = not saved
     #Roll damage
     for index, dice in enumerate(damageDice):
-        diceCount = int(dice.split("d")[0])
-        diceSides = int(dice.split("d")[1])
-        if crit: diceCount = diceCount*2
+        diceCount = int(float(dice.split("d")[0]))
+        diceSides = int(float(dice.split("d")[1]))
+        if crit:
+            diceCount = diceCount*2
+            print("ATTACK CRIT")
         damage = int(roll_dice(diceCount, diceSides, bonusToDmg))
         if bonusToDmg > 0: bonusToDmg = 0 #Apply dmg bonus once
         if saved and onSave == "miss": damage = damage*0
@@ -1306,9 +1325,10 @@ def calc_damage(interaction: discord.Interaction, attacker: str, target: str, da
         elif damageType[index] in targetDict["resistances"]: damage = damage/2
         elif damageType[index] in targetDict["vulnerabilities"]: damage = damage*2
         damage = int(damage) #/2 May make it a float. Doing int() twice may give -1dmg compared to this.
+        if damageType[index] == "healing": damage = damage*-1
         print("Damage calculated to be: " + str(damage))
         if damageType[index] in returnDamageTypes: returnDamages[returnDamageTypes.index(damageType[index])] += damage
-        elif damage > 0:
+        elif damage != 0:
             returnDamages.append(damage)
             returnDamageTypes.append(damageType[index])
     return(returnDamages, returnDamageTypes, rollToHit, saved, crit, feedbackString)
@@ -1336,11 +1356,14 @@ def apply_effects(interaction: discord.Interaction, target: str, damage: int, co
         damage -= max(damage, targetDict["HPTemp"])
     targetDict["HPCurrent"] -= damage
     targetDict["HPCurrent"] = min(targetDict["HPCurrent"], targetDict["HPMax"])
-    if targetDict["HPCurrent"] <= 0: feedbackString += "TargetZeroHP"
+    if targetDict["HPCurrent"] <= 0:
+        feedbackString += "TargetZeroHP"
+        conditions.append("unconscious")
     #Apply conditions (and effects)
     for condition in conditions:
-        targetDict["conditions"].append(condition)
-        targetDict = apply_condition_effects(interaction, targetDict, condition)
+        if condition not in targetDict["immunities"]:
+            targetDict["conditions"].append(condition)
+            targetDict = apply_condition_effects(interaction, targetDict, condition)
     #Roll concentration check (if applicable)
     for condition in targetDict["conditions"]:
         if condition.startswith("concentration") and ability_check(interaction, targetDict["name"], "CON", "None") < max(10, damage/2): targetDict = remove_logic(interaction, target, condition)
@@ -1413,11 +1436,23 @@ DONE ~~ALSO DELETE THE USER ID FROM THE USERID TABLE IF NO CHARACTERS REFERENCE 
 DONE ~~So far, only the autocomplete is matching users with their characters. A similar thing needs to be done with getting character info (if they're getting info for a user's character that's not in that guild, fail it.)~~
 DONE ~~In character creation, allow users to create characters with the same name as other users (a single user must have unique character names)~~
 Low Priority (for now): Fully encrypt the UserIDs table (or at least the ID column) it should be secure enough already as only the hosting PC (my PC) has the DNDatabase file, but it does help.
-DONE ~~Make multible encounters able to be run at once (on differnt servers)~~
-DONE ~~/reset resets every character, even ones not accociated wit the guild that the command was run from~. It should only resets characters that the guild 'owns'~~
-DONE ~~Add a /privacy delete-me command to remove any and all userIDs sored by that user (along with their characters/agreement log)~~
-DONE ~~Add an INSERT command to chracter creation to record their accepting of the policy agrements~~
-DONE ~~add a global varaible PolicyVersion to enable quickly changing of policy versions (so I wont have to go through te code later to update the number, also future proof)~~
+DONE ~~Make multiple encounters able to be run at once (on different servers)~~
+DONE ~~/reset resets every character, even ones not associated with the guild that the command was run from~. It should only reset characters that the guild 'owns'~~
+DONE ~~Add a /privacy delete-me command to remove any and all userIDs stored by that user (along with their characters/agreement log)~~
+DONE ~~Add an INSERT command to character creation to record their acceptance of the policy agreements ~~
+DONE ~~add a global variable PolicyVersion to enable quickly changing of policy versions (so I won't have to go through the code later to update the number, also future proof)~~
+Bugs found during play test:
+DONE ~~Bypass 'I Agree' to TOS & Privacy policy if already agreed.~~
+DONE ~~Sneak attack damage gets critted when roll to hit is => 20~~
+DONE ~~Fireball succ/fail damage is inverted~~ Generally improved saving throws for spells
+DONE ~~ADD DEVINE SMITE~~
+REJECTED ~~barbarian adv on death save~~ Tis is not a thing, DONE ~~Maybe: Give the unconcious condition upon reaching 0hp.~~
+Maneuvers for fighters
+DONE ~~Healing doesnt work~~
+Multiple user inputs for characters (not owners) on create encounter
+More validation on character creation.
+DONE ~~attacks with 'secondary attack' property can't be used as main attacks~~
+DONE ~~condition immunities~~
     """
 # Start the bot
 client.run("MY_TOKEN")
