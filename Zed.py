@@ -941,11 +941,10 @@ async def create_encounter(interaction: discord.Interaction, character_owners: s
     characterFound = False
     #Roll initative and reorder 'characterList' + 'character_owners'
     for character in characterList: initRolls.append(roll_dice(1, 20))
-    print("Old Character list: "+str(characterList))
-    print("Init rolls for characters: "+str(initRolls))
     characterList[:] = [character for _, character in sorted(zip(initRolls, characterList))]
+    character_owners[:] = [owner for _, owner in sorted(zip(initRolls, character_owners))]
     characterList.reverse()
-    print("Ordered on init list: "+str(characterList))
+    character_owners.reverse()
     #Find characters full names (and if they exist)
     for index, character in enumerate(characterList):
         characterDict, characterFound = getCharacterInfo(interaction, character)
@@ -1073,12 +1072,12 @@ async def encounter(interaction, command: str, info1=None, info2=None):
                 encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex] = max(encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex]-1, 0)
                 writeEncounterInfo(interaction, encounterDict)
                 return(encounterDict["actionsLeft"][encounterDict["currentIndex"]][actionIndex])
-            #await interaction.response.edit(view=ActionView(encounterDict)) BROKEN: WANTS TO UPDATE ENCOUNTER INTERACTION (the one with buttons), CURRENT INTERACTION OBJECT IS THE ACTION (/attack or /cast)
+            #Update the buttons on the view
         except Exception as e: print(str(e) + ". " + info1.title() + " could not be removed, is enounter started?")
 
 class ActionView(View):
     def __init__(self, interaction: Interaction, encounterDict):
-        super().__init__(timeout=10) #Max timeout time is 15mins (900s)
+        super().__init__(timeout=600) #Max timeout time is 15mins (900s)
         self.encounterDict = encounterDict
         self.interaction = interaction
         for index, item in enumerate(self.children):
@@ -1087,17 +1086,11 @@ class ActionView(View):
                     item.disabled = True
         
     async def on_timeout(self):
-        print("TIMEING OUT INITAL")
         try: message = await self.message.channel.fetch_message(self.message.id)
-        except Exception:
-            print("Message doesnt exist")
-            return() #message deleted, nothing to do
-        print("Message components: "+str(message.components))
-        if not message.components:
-            print("Message has no components.")
-            return()
+        except Exception: return()
+        if not message.components: return()
         #Encounter no longer valid, remove it from database
-        print("TIMEING OUT")
+        print("Encounter timing out.")
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
         Query = "DELETE FROM encounters WHERE GuildID_FKey = ?"
@@ -1137,6 +1130,7 @@ class ActionView(View):
 async def apply(interaction: discord.Interaction, target: str, damage: int, damage_type: str, condition: str = "", condition_duration: int = 0):
     #'Sanatise' User inputs
     target = target.strip().lower()
+    damage_type = damage_type.strip().lower()
     condition = condition.strip().lower()
     condition_duration = max(0, condition_duration)
     #Setup some variables
@@ -1144,30 +1138,35 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, dama
     calcDamageTuple = ()
     targetFound = False
     returnString, outputMessage = "", ""
+    tempHpToApply = 0
     #Get target info
     targetDict, targetFound = getCharacterInfo(interaction, target)
     #Validate Data
     if not targetFound:
         await interaction.response.send_message("The target "+target.title()+" was not found, check input and try again.")
         return()
+    if damage < 0:
+        await interaction.response.send_message("Damage can not be less than zero. Healing can be done using the 'Healing' damage type.")
+        return()
     if condition == "" and condition_duration > 0:
         await interaction.response.send_message("Condition duration was entered without a condition. This does not compute.")
         return()
     #Calc damage (if applicable)
-    if damage_type != "True":
-        calcDamageTuple = calc_damage(interaction, targetDict["name"], targetDict["name"], [damage], [damage_type], 0, 0, 0, 0, "none", False, 20)
-        damage = sum(calcDamageTuple[0])
+    if damage_type == "temphp": tempHpToApply, damage = damage, 0
+    elif damage_type != "true": damage = sum(calc_damage(interaction, targetDict["name"], targetDict["name"], [damage], [damage_type], 0, 0, 0, 0, "none", "none", False, 20)[0])
     #Apply the effects
-    if condition_duration <= 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition])
-    elif condition_duration > 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition+"."+str(condition_duration)])
+    if condition_duration <= 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition], ["ApplyTempHP:"+str(tempHpToApply)])
+    elif condition_duration > 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition+"."+str(condition_duration)], ["ApplyTempHP:"+str(tempHpToApply)])
     #Format output
-    if int(damage) >= 0: outputMessage += ":crossed_swords: " + target.title() + " has taken " + str(damage) + " damage."
-    elif int(damage) < 0: outputMessage += ":heart: " + target.title() + " has been healed for " + str(int(damage)*-1) + " damage."
+    if damage_type == "healing": outputMessage += ":heart: " + target.title() + " was given " + str(damage) + damage_type.title() + "."
+    elif damage_type == "temphp": outputMessage += ":blue_heart: " + target.title() + " was given " + str(tempHpToApply) + damage_type.title() + "." 
+    elif int(damage) >= 0: outputMessage += ":crossed_swords: " + target.title() + " has taken " + str(damage) + damage_type.title() + " damage."
     if condition != "":
         outputMessage += "\n" + str(condition) + " has also been applied"
         if int(condition_duration) > 0: outputMessage += " for " + str(int(condition_duration)) + " rounds"
         outputMessage += "."
     if "TargetZeroHP" in returnString: outputMessage += "\n:skull: " + targetDict["name"] + " has reached 0HP."
+    if "BrokenConcentration" in returnString: outputMessage += "\n:eye: " + targetDict["name"].title() + "'s concentration was broken."
     await interaction.response.send_message(outputMessage)
 apply.autocomplete("target")(autocomplete_characters)
 
@@ -1447,8 +1446,7 @@ def apply_effects(interaction: discord.Interaction, target: str, damage: int, co
         return()
     #Apply damage
     if targetDict["HPTemp"] > 0 and damage > 0:
-        targetDict["HPTemp"] = max(0, targetDict["HPTemp"] - damage)
-        damage -= max(damage, targetDict["HPTemp"])
+        targetDict["HPTemp"], damage = max(0, targetDict["HPTemp"] - damage), max(0, damage-targetDict["HPTemp"])
     targetDict["HPCurrent"] -= damage
     targetDict["HPCurrent"] = max(min(targetDict["HPCurrent"], targetDict["HPMax"]), 0)
     if targetDict["HPCurrent"] <= 0:
