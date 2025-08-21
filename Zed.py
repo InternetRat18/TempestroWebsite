@@ -254,7 +254,7 @@ def writeInfo(tableName: str, infoDict: dict, remove: bool = False, userID: str 
                       "|".join(infoDict["savingThrows"]).upper(),
                       infoDict["deathSaves"],
                       "|".join([" ".join(infoDict["vulnerabilities"]), " ".join(infoDict["resistances"]), " ".join(infoDict["immunities"])]).title(),
-                      " ".join(infoDict["conditions"]).title()]
+                      " ".join(infoDict["conditions"]).strip().title() if len(infoDict["conditions"]) > 0 else "None"]
         elif isinstance(infoDict, list): #If its a list (in case of /create_character)
             fields = infoDict
     #Check if character is present
@@ -311,6 +311,20 @@ async def autocomplete_characters(interaction: discord.Interaction, current: str
     setOfAllReleventCharacters = {row[0] for row in DBCursor.fetchall()}
     DBConnection.close()
     return [app_commands.Choice(name=character, value=character) for character in setOfAllReleventCharacters if current.title() in character.title()][:25]
+async def autocomplete_characterList(interaction: discord.Interaction, current: str): #Autocomplete for caster/attacker/roller LISTS
+    DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
+    DBCursor = DBConnection.cursor()
+    GuildUserIDs = [str(user.id) for user in interaction.guild.members]
+    QuestionMarks = ",".join("?" * len(GuildUserIDs))
+    Query = "SELECT Name FROM characters JOIN userIDs ON characters.UserID_FKey = userIDs.UserID_PKey WHERE userIDs.UserID IN ("+QuestionMarks+")"
+    DBCursor.execute(Query, GuildUserIDs)
+    setOfAllReleventCharacters = {row[0] for row in DBCursor.fetchall()}
+    DBConnection.close()
+    #Filter based on input and form output
+    focusCharacter = current.strip().split(",")[-1].strip().title()
+    focusString = ",".join(current.split(",")[:-1])
+    focusString += ", " if "," in current else ""
+    return [app_commands.Choice(name=str(focusString+character), value=str(focusString+character)) for character in setOfAllReleventCharacters if character.startswith(focusCharacter)][:25]
 async def autocomplete_attacks(interaction: discord.Interaction, current: str): #Autocomplete for targets (only the first target)
     return [app_commands.Choice(name=attack, value=attack) for attack in setOfAllAttacks if current.title() in attack.title()][:25]
 
@@ -336,7 +350,7 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     #Setup some variables
     targetDict, casterDict, spellDict = {}, {}, {}
     targetFound, casterFound, spellFound, spellSaved, spellCrit, critImmune, saveReversed = False, False, False, False, False, False, False
-    spellRollToHit, spellAttackBonus, spellSaveDC, damageTotal, spellBonusToHit, spellBonusToDamage, spellRollToHitOverride = 0, 0, 0, 0, hit_modifier, damage_modifier, 0
+    spellRollToHit, spellAttackBonus, spellSaveDC, damageTotal, spellBonusToHit, spellBonusToDamage, spellRollToHitOverride, tempHPToApply = 0, 0, 0, 0, hit_modifier, damage_modifier, 0, 0
     targetDicts, spellDamages, spellDamageTypes, casterConditionsToApply, targetConditionsToApply = [], [], [], [], []
     spellCastingAbility, spellFeedbackString, applyEffectsFeedback, outputMessage, spellHitLine = "", "", "", "", ""
     targetsList = str(targets+",").split(",")[:-1] #List of Strings
@@ -378,18 +392,19 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     #For each target:
     for index, targetDict in enumerate(targetDicts):
         #Change save requirements as needed
-        if spellDict["save"] == "ac": spellSaveDC = targetDict["AC"]
-        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellBonusToHit, spellRollToHitOverride, critImmune, saveReversed = 0, ability_check(interaction, casterDict["name"], "none", spellDict["save"], advantage_override)[0], True, True
+        if spellDict["save"] == "ac": spellSaveDC, spellBonusToHit = targetDict["AC"], spellBonusToHit+spellAttackBonus
+        elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellRollToHitOverride, critImmune, saveReversed = ability_check(interaction, casterDict["name"], "none", spellDict["save"], advantage_override)[0], True, True
         #Roll damage (if relevent)
         spellDamages, spellDamageTypes, spellRollToHit, spellSaved, spellCrit, spellFeedbackString = calc_damage(interaction, casterDict["name"], targetDict["name"], spellDict["damageDice"], spellDict["damageType"], spellBonusToHit, spellBonusToDamage, spellSaveDC, 0, spellDict["onFail"], advantage_override, not critImmune, spellRollToHitOverride, critImmune)
         if spellDict["save"] == "ac": spellHitLine = ("❌" if spellSaved else "✅") + " ("+str(spellRollToHit)+"Hit vs "+str(spellSaveDC)+"AC)"
         elif spellDict["save"] in ["str", "dex", "con", "int", "wis", "cha"]: spellHitLine = ("❌" if spellSaved else "✅") + " ("+str(spellRollToHit)+spellDict["save"].upper()+" vs "+str(spellSaveDC)+"DC)"
         else: spellSaved, spellCrit, spellRollToHit = False, False, 0
         #Apply effects
-        damageTotal += sum(spellDamages)
+        tempHPToApply += sum(spellDamages[index] for index in range(len(spellDamages)) if spellDamageTypes[index] == "temphp") #Combine tempHP
+        damageTotal += sum(spellDamages[index] for index in range(len(spellDamages)) if spellDamageTypes[index] != "temphp") #Combine other damages
         if not spellSaved: targetConditionsToApply += [condition for condition in spellDict["conditions"] if not condition.startswith("#")]
-        if not spellSaved: casterConditionsToApply += [condition+"|"+spellDict["name"]+"|"+targetDict["name"] for condition in spellDict["conditions"] if condition.startswith("#")]
-        applyEffectsFeedback = apply_effects(interaction, targetDict["name"], damageTotal, targetConditionsToApply)
+        if not spellSaved: casterConditionsToApply += [condition[1:]+":"+spellDict["name"].replace(" ", "|")+":"+targetDict["name"].replace(" ", "|") for condition in spellDict["conditions"] if condition.startswith("#")]
+        applyEffectsFeedback = apply_effects(interaction, targetDict["name"], damageTotal, targetConditionsToApply, ["ApplyTempHP:"+str(tempHPToApply)])
         apply_effects(interaction, casterDict["name"], 0, casterConditionsToApply)
         #Format output string
         outputMessage += "*" + casterDict["name"].title() + "* has cast *" + spellDict["name"].title() + "* targeting *" + targetDict["name"].title() + "*"
@@ -397,9 +412,12 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
         if spellCrit: outputMessage += "\n:tada: This spell attack CRITICAL HIT!"
         if damageTotal >= 1: outputMessage += "\n:crossed_swords: The spell delt: **" + str(damageTotal) + "Dmg** (" + " + ".join(str(spellDamages[i]) + str(spellDamageTypes[i]).title() for i in range(len(spellDamages))) + ")"
         elif damageTotal < 0: outputMessage += "\n:heart: The spell healed: **" + str(damageTotal*-1) + "Hp** (" + " + ".join(str(spellDamages[i]*-1) + str(spellDamageTypes[i]).title() for i in range(len(spellDamages))) + ")"
+        if tempHPToApply > 0: outputMessage += "\n:blue_heart: The spell granted: **" + str(tempHPToApply) + "Hp** (" + " + ".join(str(spellDamages[i]) + str(spellDamageTypes[i]).title() for i in range(len(spellDamages)) if spellDamageTypes[i] == "temphp") + ")"
+        if "TargetZeroHP" in applyEffectsFeedback: outputMessage += "\n:skull: " + targetDict["name"].title() + " has reached 0HP."
+        if "BrokenConcentration" in applyEffectsFeedback: outputMessage += "\n:eye: You broke " + targetDict["name"].title() + "'s concentration."
         outputMessage += "\n\n"
         #'Reset' Varaibles in here
-        damageTotal = 0
+        damageTotal, tempHPToApply = 0, 0
         spellBonusToHit = hit_modifier
     #Return string and take away relevent action.
     await interaction.response.send_message(outputMessage)
@@ -417,9 +435,8 @@ cast.autocomplete("targets")(autocomplete_characters)
                        weapon_mod="If your weapon is enchanted with a hit/damage modifier",
                        secondary_weapon_mod="If your secondary weapon is enchanted with a hit/damage modifier",
                        advantage_override="Used for special circumstances, where (dis)advantage is given outside of conditions* (*invisiility included*).")
-@app_commands.choices(
-    advantage_override=[app_commands.Choice(name="Dis-advantage", value="disadvantage"),
-                        app_commands.Choice(name="advantage", value="advantage")])
+@app_commands.choices(advantage_override=[app_commands.Choice(name="Dis-advantage", value="disadvantage"),
+                                          app_commands.Choice(name="advantage", value="advantage")])
 async def attack(interaction: discord.Interaction, attacker: str, attack: str, target: str, secondary_attack: str = "none", weapon_mod: int = 0, secondary_weapon_mod: int = 0, advantage_override: str = "none"):
     #'Sanitise' the user inputs
     attack = attack.lower().strip()
@@ -428,7 +445,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     target = target.lower().strip()
     #Setup some variables.
     outputMessage, extraOutput, applyEffectsFeedback, preferredSkill, attackRollToHitString, secAttackRollToHitString, attackFeedbackString, secAttackFeedbackString, extraEffects, actionsToRemove = "", "", "", "", "", "", "", "", "", ""
-    bonusToHit, bonusToDmg, secBonusToHit, secBonusToDmg, attackRollToHit, secAttackRollToHit, damageTotal = 0, 0, 0, 0, 0, 0, 0
+    bonusToHit, bonusToDmg, secBonusToHit, secBonusToDmg, attackRollToHit, secAttackRollToHit, damageTotal, tempHPToApply = 0, 0, 0, 0, 0, 0, 0, 0
     attackDamages, attackDamageTypes, secAttackDamages, secAttackDamageTypes, targetConditionsToApply, attackerConditionsToApply, combinedAttackDamages, combinedAttackDamageTypes = [], [], [], [], [], [], [], []
     attackSaved, attackCrit, secAttackSaved, secAttackCrit = False, False, False, False
     sizeList = ["tiny", "small", "medium", "large", "huge", "gargantuan"]
@@ -499,7 +516,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     for condition in attackerDict["conditions"]:
         if condition.startswith("bless"):
             bonusToHit += roll_dice(1, 4, 0)
-            attackerDict = remove_logic(interaction, attackerDict["name"], "bless")
+            attackerDict = remove_logic(interaction, attackerDict, "bless")
         if "hunters|mark" in condition:
             bonusToDmg, secBonusToDmg = bonusToDmg + roll_dice(1, 6), secBonusToDmg + roll_dice(1, 6)
             extraOutput += "\n:book: Special effect 'Hunters Mark' triggered! (+1d6 to attack(s) damage)"
@@ -509,7 +526,7 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
         attackRollToHitString, attackTargetDCString, actionsToRemove = str(attackRollToHit) + "Hit", str(targetDict["AC"]) + "AC", actionsToRemove+"Action"
     if secAttackFound:
         if "special" not in str(secAttackDict["properties"]):
-            if secAttackFound: secAttackDamages, secAttackDamageTypes, secAttackRollToHit, secAttackSaved, secAttackCrit, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], secAttackDict["damageDice"], secAttackDict["damageType"], secBonusToHit, secBonusToDmg, targetDict["AC"], 0, "miss", advantage_override)
+            if secAttackFound: secAttackDamages, secAttackDamageTypes, secAttackRollToHit, secAttackSaved, secAttackCrit, secAttackFeedbackString = calc_damage(interaction, attackerDict["name"], targetDict["name"], secAttackDict["damageDice"], secAttackDict["damageType"], secBonusToHit, secBonusToDmg, targetDict["AC"], 0, "miss", advantage_override, True, attackRollToHit if "secondaryattack" in attackDict["properties"] else 0)
             if secAttackFound: secAttackRollToHitString, secAttackTargetDCString, actionsToRemove = str(secAttackRollToHit) + "Hit", str(targetDict["AC"]) + "AC", actionsToRemove+"Bonusaction"
     #Roll damage (for special attacks)
     if attackDict["name"] == "net":
@@ -532,10 +549,14 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
             secAttackFound = False
     #Apply effects
     combinedAttackDamages, combinedAttackDamageTypes = attackDamages+secAttackDamages, attackDamageTypes+secAttackDamageTypes
-    damageTotal += sum(combinedAttackDamages)
-    if not attackSaved: targetConditionsToApply += attackDict["conditions"]
-    if secAttackFound: targetConditionsToApply += secAttackDict["conditions"]
-    applyEffectsFeedback = apply_effects(interaction, target, damageTotal, targetConditionsToApply)
+    tempHPToApply += sum(combinedAttackDamages[index] for index in range(len(combinedAttackDamages)) if combinedAttackDamageTypes[index] == "temphp") #Combine tempHP
+    damageTotal += sum(combinedAttackDamages[index] for index in range(len(combinedAttackDamages)) if combinedAttackDamageTypes[index] != "temphp") #Combine other damages
+    if not attackSaved: targetConditionsToApply += [cond for cond in attackDict["conditions"] if cond.startswith("#") == False]
+    if secAttackFound: targetConditionsToApply += [cond for cond in  secAttackDict["conditions"] if cond.startswith("#") == False]
+    if not attackSaved: attackerConditionsToApply += [cond[1:] for cond in attackDict["conditions"] if cond.startswith("#") == True]
+    if secAttackFound: attackerConditionsToApply += [cond[1:] for cond in secAttackDict["conditions"] if cond.startswith("#") == True]
+    
+    applyEffectsFeedback = apply_effects(interaction, target, damageTotal, targetConditionsToApply, ["ApplyTempHp:"+str(tempHPToApply)])
     apply_effects(interaction, attacker, 0, attackerConditionsToApply)
     #Format output
     outputMessage += "*" + attackerDict["name"].title() + "* used *" + attackDict["name"].title() + "* targeting *" + targetDict["name"].title() + "*"
@@ -546,9 +567,10 @@ async def attack(interaction: discord.Interaction, attacker: str, attack: str, t
     if damageTotal >= 1: outputMessage += "\n:crossed_swords: The attacks delt: **" + str(damageTotal) + "Dmg** (" + " + ".join(str(combinedAttackDamages[i]) + str(combinedAttackDamageTypes[i]).title() for i in range(len(combinedAttackDamages))) + ")"
     if "bless" in extraEffects: outputMessage += "\n:book: Special effect 'Bless' triggered! (+1d4 to attack roll/save)"
     if advantage_override != "none": outputMessage += "\n:warning: Manual " + advantage_override.title() + " was given."
-    elif "Advantage" in attackFeedbackString: outputMessage += ":grey_exclamation: You were given Advantage."
+    elif "Advantage" in attackFeedbackString: outputMessage += "\n:grey_exclamation: You were given Advantage."
     elif "Disadvantage" in attackFeedbackString: outputMessage += ":grey_exclamation: You were given Disadvantage."
     if "TargetZeroHP" in applyEffectsFeedback: outputMessage += "\n:skull: " + targetDict["name"].title() + " has reached 0HP."
+    if "BrokenConcentration" in applyEffectsFeedback: outputMessage += "\n:eye: You broke " + targetDict["name"].title() + "'s concentration."
     #Return string and take away relevent action.
     await interaction.response.send_message(outputMessage)
     if "Action" in actionsToRemove: await encounter(interaction, "remove action", "action", attackerDict["name"])
@@ -633,13 +655,11 @@ async def create_character(interaction: discord.Interaction):
         localTime = str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + " AEDT(Format: YYYY-MM-DD HH-MM-SS)"
         DBCursor.execute(Query, [interaction.user.id, localTime, str(policyVersion), "AGREED"])
         DBConnection.commit()
-        await interaction.followup.send("✅ Check your DMs to begin character creation.", ephemeral=True)
+        await interaction.followup.send("✅ Check your DMs to begin character creation.\n", ephemeral=True)
     else: await interaction.response.send_message("✅ Check your DMs to begin character creation.", ephemeral=True)
     DBConnection.close()
     #Proceed with character creation
     user = interaction.user
-
-
     dmChannel = await user.create_dm()
     def check(m): #This filters messages so it must be from the inital user and in Tempestros DM's
         return m.author == user and m.channel == dmChannel
@@ -659,9 +679,17 @@ async def create_character(interaction: discord.Interaction):
             return()
         DBConnection.close()
         #Class and Level
-        await dmChannel.send("What is your **Class and Level**? (e.g., Wizard 9)\nFor GM's, if this is a monster, enter 'Monster' + CR.")
-        msgClassAndLevel = await client.wait_for('message', check=check, timeout=300)
-        ClassLevel = msgClassAndLevel.content.strip()
+        ClassLevel, count = "", 0
+        while True:
+            await dmChannel.send("What is your **Class and Level**? (e.g., Wizard 9)\nFor GM's, if this is a monster, enter 'Monster' + CR.")
+            msgClassAndLevel = await client.wait_for('message', check=check, timeout=300)
+            ClassLevel = msgClassAndLevel.content.strip()
+            if len(ClassLevel.split(" ")) == 2: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Incorrect format too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Incorrect format. Please try again.")
         #Size
         sizeList = ["Tiny", "Small", "Medium", "Large", "Huge", "Gargantuan"]
         sizePrompt = "\n".join([str(i+1)+". "+size for i, size in enumerate(sizeList)])
@@ -681,27 +709,56 @@ async def create_character(interaction: discord.Interaction):
         msgRace = await client.wait_for('message', check=check, timeout=300)
         race = msgRace.content.strip()
         #Stats
-        await dmChannel.send("Enter your **Stats** in STR,DEX,CON,INT,WIS,CHA order separated by commas (e.g. 10,15,14,12,13,8).")
-        msgStats = await client.wait_for('message', check=check, timeout=300)
-        rawStats = msgStats.content.strip().replace(",", "|")
-        statsList = rawStats.split("|")
-        if len(statsList) != 6:
-            await dmChannel.send("❌ Incorrect format. Please start over.")
-            return()
+        statsList, count = [], 0
+        while True:
+            await dmChannel.send("Enter your **Stats** in STR,DEX,CON,INT,WIS,CHA order separated by commas (e.g. 10,15,14,12,13,8).")
+            msgStats = await client.wait_for('message', check=check, timeout=300)
+            rawStats = msgStats.content.strip().replace(",", "|")
+            statsList = rawStats.split("|")
+            if len(statsList) == 6: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Incorrect format too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Incorrect format. Please try again.")
         modsList = [str((int(stat) - 10) // 2) for stat in statsList]
         statMods = "|".join(modsList)
         #HP
-        await dmChannel.send("What is your **Max HP**?")
-        msgHp = await client.wait_for('message', check=check, timeout=300)
-        maxHp = msgHp.content.strip()
+        maxHp, count = 0, 0
+        while True:
+            await dmChannel.send("What is your **Max HP** (including applicable feats)?")
+            msgHp = await client.wait_for('message', check=check, timeout=300)
+            maxHp = int(msgHp.content.strip())
+            if maxHp > 0: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Improper entry too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Improper entry. Please try again.")
         #AC
-        await dmChannel.send("What is your **Armor Class (AC)**, including bonuses?")
-        msgAc = await client.wait_for('message', check=check, timeout=300)
-        Ac = msgAc.content.strip()
+        Ac, count = 0, 0
+        while True:
+            await dmChannel.send("What is your **Armor Class (AC)**, including bonuses?")
+            msgAc = await client.wait_for('message', check=check, timeout=300)
+            Ac = int(msgAc.content.strip())
+            if Ac > 0: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Improper entry too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Improper entry. Please try again.")
         #Speed
-        await dmChannel.send("What is your **Speed** (in ft)?")
-        msgSpeed = await client.wait_for('message', check=check, timeout=300)
-        speed = msgSpeed.content.strip()
+        speed, count = 0, 0
+        while True:
+            await dmChannel.send("What is your base **Speed** (in ft)?")
+            msgSpeed = await client.wait_for('message', check=check, timeout=300)
+            speed = int(msgSpeed.content.strip())
+            if speed > 0: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Improper entry too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Improper entry. Please try again.")
         #Calculate proficiency bonus
         try:
             level = int(ClassLevel.split(" ")[-1])
@@ -746,15 +803,23 @@ async def create_character(interaction: discord.Interaction):
         savingThrows = msgSaved.content.strip()
         savingThrows = savingThrows.replace(",", "|")
         #Vun/Res/Imm
-        await dmChannel.send("List your **Vulnerabilities/Resistances/Immunities**, individually separated by spaces and each category separated by '/' (or enter None/None/None).\n E.g. 'Cold Fire/Piercing Slashing Bludgeoning/Crits")
-        msgVunResImm = await client.wait_for('message', check=check, timeout=300)
-        VunResImm = msgVunResImm.content.strip()
+        VunResImm, count = "", 0
+        while True:
+            await dmChannel.send("List your **Vulnerabilities/Resistances/Immunities**, individually separated by spaces and each category separated by '/' (or enter None/None/None). This may include condition immunities. \n E.g. 'Cold Fire/Piercing Slashing Bludgeoning/Crits")
+            msgVunResImm = await client.wait_for('message', check=check, timeout=300)
+            VunResImm = msgVunResImm.content.strip()
+            if len(VunResImm.split("/")) == 3: break
+            count += 1
+            if count >= 3:
+                await dmChannel.send("❌ Incorrect format too many times. Please start over.")
+                return()
+            else: await dmChannel.send("❌ Incorrect format. Please try again.")
         VunResImm = VunResImm.replace("/", "|")
         #Confirmation preview
         #DEV LINE characterInfoList = name.split(",")
-        characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,maxHp+"|0|"+maxHp,Ac,speed,profBonus,proficiencies,savingThrows,"0|0",VunResImm,"None"]
+        characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,str(maxHp)+"|0|"+str(maxHp),str(Ac),str(speed),str(profBonus),proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
-        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, it is encouraged to run a test attack before your encounter (making sure to /reset afterwards).\nPlease confirm or cancel to complete your character creation:", view=view)
+        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, it is encouraged to run a test attack before your encounter (making sure to /reset afterwards) if your attack doesnt reposnd its likey your character has incomplete/incorrect data.\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
@@ -867,17 +932,20 @@ async def reset(interaction: discord.Interaction):
                        roll_initative="If you have not already rolled initative, Tempestro will roll it and determine the turn order for you.")
 async def create_encounter(interaction: discord.Interaction, character_owners: str, characters: str, roll_initative: bool = False):
     #'Sanitise' the user inputs (and transfer to list type)
-    characterList = characters.split(",")
-    characterList = [s.lower() for s in characterList]
-    characterList = [s.strip() for s in characterList]
-    character_owners = character_owners.split(",")
-    character_owners = [s.lower() for s in character_owners]
-    character_owners = [s.strip() for s in character_owners]
+    characterList = [s.strip().lower() for s in characters.split(",")]
+    character_owners = [s.strip().lower() for s in character_owners.split(",")]
     #Setup some variables
     index = 0
+    initRolls = []
     charcterDict = {}
     characterFound = False
-    #Roll initative and reorder 'characterList' + 'character_owners' YET TODO
+    #Roll initative and reorder 'characterList' + 'character_owners'
+    for character in characterList: initRolls.append(roll_dice(1, 20))
+    print("Old Character list: "+str(characterList))
+    print("Init rolls for characters: "+str(initRolls))
+    characterList[:] = [character for _, character in sorted(zip(initRolls, characterList))]
+    characterList.reverse()
+    print("Ordered on init list: "+str(characterList))
     #Find characters full names (and if they exist)
     for index, character in enumerate(characterList):
         characterDict, characterFound = getCharacterInfo(interaction, character)
@@ -888,6 +956,7 @@ async def create_encounter(interaction: discord.Interaction, character_owners: s
     #Create the encounter
     await interaction.response.send_message("Encounter has started.")
     await encounter(interaction, "start", characterList, character_owners)
+create_encounter.autocomplete("characters")(autocomplete_characterList)
 
 #Function for everything related to the encounter
 async def encounter(interaction, command: str, info1=None, info2=None):
@@ -972,7 +1041,9 @@ async def encounter(interaction, command: str, info1=None, info2=None):
         encounterDict["actionsLeft"][encounterDict["currentIndex"]] = [actCount, bActCount, rActCount]
         writeEncounterInfo(interaction, encounterDict)
         outputMessage += "\n:stopwatch: You will have ten(10) minutes to use your actions.\n:notepad_spiral: Check off your actions below as you go to keep track!"
-        await interaction.followup.send(outputMessage, view=ActionView(encounterDict))
+        actView = ActionView(interaction, encounterDict)
+        msg = await interaction.followup.send(outputMessage, view=actView)
+        actView.message = msg
     #Command end turn
     elif command == "end turn":
         encounterDict, encounterFound = getEncounterInfo(interaction)
@@ -987,7 +1058,7 @@ async def encounter(interaction, command: str, info1=None, info2=None):
     elif command == "remove action":
         try: #Allows /cast and /attack to be used outside of an encounter
             encounterDict, encounterFound = getEncounterInfo(interaction)
-            if not encounterFound: raise ValueError("encounter 'remove action' Error: Encounter could not be found.")
+            if not encounterFound: raise ValueError("encounter 'remove action' Error: Encounter could not be found")
             actionIndex = {"action": 0, "bonus action": 1, "reaction": 2}.get(info1)
             if actionIndex is None: raise ValueError("Invalid value provided for action. Action given: " + str(info1))
             if info2 is None: #If a character is entered
@@ -1006,16 +1077,27 @@ async def encounter(interaction, command: str, info1=None, info2=None):
         except Exception as e: print(str(e) + ". " + info1.title() + " could not be removed, is enounter started?")
 
 class ActionView(View):
-    def __init__(self, encounterDict):
-        super().__init__(timeout=600) #Max timeout time is 15mins (900s)
+    def __init__(self, interaction: Interaction, encounterDict):
+        super().__init__(timeout=10) #Max timeout time is 15mins (900s)
         self.encounterDict = encounterDict
+        self.interaction = interaction
         for index, item in enumerate(self.children):
             if index != 3:
                 if encounterDict["actionsLeft"][encounterDict["currentIndex"]][index] <= 0:
                     item.disabled = True
-
+        
     async def on_timeout(self):
+        print("TIMEING OUT INITAL")
+        try: message = await self.message.channel.fetch_message(self.message.id)
+        except Exception:
+            print("Message doesnt exist")
+            return() #message deleted, nothing to do
+        print("Message components: "+str(message.components))
+        if not message.components:
+            print("Message has no components.")
+            return()
         #Encounter no longer valid, remove it from database
+        print("TIMEING OUT")
         DBConnection = sqlite3.connect("Zed\\DNDatabase.db")
         DBCursor = DBConnection.cursor()
         Query = "DELETE FROM encounters WHERE GuildID_FKey = ?"
@@ -1024,6 +1106,7 @@ class ActionView(View):
         DBCursor.execute(Query, (self.encounterDict["GuildID_FKey"],))
         DBConnection.commit()
         DBConnection.close()
+        await self.interaction.followup.send(":hourglass: Timed out. The encounter is over.")
 
     @discord.ui.button(label="Action", style=ButtonStyle.primary)
     async def action(self, interaction: Interaction, button: Button):
@@ -1048,15 +1131,17 @@ class ActionView(View):
 
 # Slash command: /Apply
 @client.tree.command(name="apply", description="Manually apply damage, healing, or conditions to a character (typicly used by DM).")
-@app_commands.describe(target="The character you want to apply these effects to.",damage="The damage to apply to the target(0 for nothing, and negative for healing).",condition="Condition you wish to apply to the target",condition_duration="how many turns should the condition last (leave blank for no duration)")
-@app_commands.choices(condition=[app_commands.Choice(name=cond, value=cond) for cond in ["Invisible", "Hidden", "Surprised", "Flanking", "Helped", "FaerieFire", "GuidingBolt", "Unaware", "Blinded", "Prone", "Poisoned", "Restrained", "Grappled", "Obscured", "Exhaustion3", "Silenced", "Dodging", "Cursed", "Paralyzed"][:25]])
-async def apply(interaction: discord.Interaction, target: str, damage: int, condition: str = "", condition_duration: int = 0):
+@app_commands.describe(target="The character you want to apply these effects to.",damage="The damage to apply to the target(0 for nothing, and negative for healing).",damage_type="The damage type of your damage, will apply Vul/Res/Imm. 'True' dmaage will ignore this.",condition="Condition you wish to apply to the target",condition_duration="how many turns should the condition last (leave blank for no duration)")
+@app_commands.choices(condition=[app_commands.Choice(name=cond, value=cond) for cond in ["Invisible", "Hidden", "Surprised", "Flanking", "Helped", "FaerieFire", "GuidingBolt", "Unaware", "Blinded", "Prone", "Poisoned", "Restrained", "Grappled", "Obscured", "Exhaustion3", "Silenced", "Dodging", "Cursed", "Paralyzed"][:25]],
+                      damage_type=[app_commands.Choice(name=damage_type, value=damage_type) for damage_type in ["True", "Healing", "TempHP", "Bludgeoning", "Piercing", "Slashing", "Fire", "Cold", "Force", "Lightning", "Necrotic", "Poison", "Psychic", "Radient", "Thunder"]])
+async def apply(interaction: discord.Interaction, target: str, damage: int, damage_type: str, condition: str = "", condition_duration: int = 0):
     #'Sanatise' User inputs
     target = target.strip().lower()
     condition = condition.strip().lower()
     condition_duration = max(0, condition_duration)
     #Setup some variables
     targetDict = {}
+    calcDamageTuple = ()
     targetFound = False
     returnString, outputMessage = "", ""
     #Get target info
@@ -1068,6 +1153,10 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, cond
     if condition == "" and condition_duration > 0:
         await interaction.response.send_message("Condition duration was entered without a condition. This does not compute.")
         return()
+    #Calc damage (if applicable)
+    if damage_type != "True":
+        calcDamageTuple = calc_damage(interaction, targetDict["name"], targetDict["name"], [damage], [damage_type], 0, 0, 0, 0, "none", False, 20)
+        damage = sum(calcDamageTuple[0])
     #Apply the effects
     if condition_duration <= 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition])
     elif condition_duration > 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition+"."+str(condition_duration)])
@@ -1178,11 +1267,10 @@ def ability_check(interaction: discord.Interaction, roller: str, abilityStat: st
             if condition.startswith("bless") and not passive: #Spell specific bonus
                 modifier += roll_dice(1, 4) #Consume the bonus
                 extraEffects += "Bless"
-                remove_logic(interaction, roller, "bless") #Remove the bonus (its consumed)
+                rollerDict(interaction, rollerDict, "bless") #Remove the bonus (its consumed)
     else:
         for ability in rollerDict["proficiencies"]:
             if ability == abilityCheck: modifier += rollerDict["profBonus"] #Proficiency
-            print("ability_check Info: Attempting Expert; does " + ability + "==" + abilityCheck+"x2")
             if ability == abilityCheck+"x2": modifier += rollerDict["profBonus"] #Expertise
         for condition in rollerDict["conditions"]:
             if condition.startswith(abilityCheck): modifier += int(condition.replace(abilityCheck, "")) #e.g. Stealth+10 (for 'Pass without trace')
@@ -1208,33 +1296,38 @@ def roll_dice(dice_count: int, dice_sides: int, modifier: int = 0) -> int:
         print("Natural roll: " + str(roll))
     return(Total)
 
-def remove_logic(interaction: discord.Interaction, targetDict: dict, condition: str) -> tuple[dict, bool]:
+def remove_logic(interaction: discord.Interaction, targetDict: dict, enteredCondition: str) -> tuple[dict, bool]:
     #'Sanitise' inputs
-    condition = condition.strip().lower()
+    enteredCondition = enteredCondition.strip().lower()
     #Declare some variables
     conditionFound, spellTargetFound, spellFound = False, False, False
     concentratingSpell, concentratingSpellTarget = "", ""
     concentratingSpellConditions = set()
     spellTargetDict = {}
+    print("remove_logic Feedback: Requested removal of cond: "+enteredCondition+", from target conditions: "+str(targetDict["conditions"]))
     #remove the condtion
     for condition in targetDict["conditions"]:
-        if condition.startswith(condition):
+        if condition.startswith(enteredCondition):
             targetDict["conditions"].remove(condition)
             conditionFound = True
-    #Remove its bonuses (if applicable)
+    #Remove its effects
             apply_condition_effects(interaction, targetDict, condition, "-")
-        if condition.startswith("concentration"): #If were removing concentration, we also need to remove the spell effects
-            concentratingSpell, concentratingSpellTarget = condition.split(":")[1], condition.split(":")[2]
-            spellDict, spellFound = getSpellInfo(concentratingSpell) #Get the spell info
-            concentratingSpellConditions = set([cond for cond in spellDict["conditions"] if not cond.startswith("#")]) #Remove self inflicted conditions
-            if concentratingSpellTarget != target: spellTargetDict, spellTargetFound = getCharacterInfo(interaction, concentratingSpellTarget)
-            else: spellTargetDict = targetDict
-            for cond in concentratingSpellConditions: #Remove the spells effects
+    print("remove_logic Info: checking if "+condition+" startswith concentration")
+    if enteredCondition.startswith("concentration"): #If were removing concentration, we also need to remove the spell effects
+        concentratingSpell, concentratingSpellTarget = enteredCondition.split(":")[1].replace("|", " "), enteredCondition.split(":")[2].replace("|", " ")
+        spellDict, spellFound = getSpellInfo(concentratingSpell) #Get the spell info
+        concentratingSpellConditions = set([cond for cond in spellDict["conditions"] if not cond.startswith("#")]) #Remove self inflicted conditions
+        if concentratingSpellTarget != targetDict["name"]: spellTargetDict, spellTargetFound = getCharacterInfo(interaction, concentratingSpellTarget)
+        else: spellTargetDict = targetDict
+        print("remove_logic Info: Removing "+condition+" and subconditions; "+str(concentratingSpellConditions))
+        for cond in concentratingSpellConditions: #Remove the spells effects
+            print("remove_logic Info: Concentration Broken; attempting removal of: "+str(cond))
+            if cond in str(spellTargetDict["conditions"]): #If not removed manualy
                 spellTargetDict["conditions"].remove(cond)
                 spellTargetDict = apply_condition_effects(interaction, spellTargetDict, cond, "-")
-            if concentratingSpellTarget != target: writeInfo("characters", spellTargetDict)
-            else: targetDict = spellTargetDict
-            conditionFound = True
+        if concentratingSpellTarget != targetDict["name"]: writeInfo("characters", spellTargetDict)
+        else: targetDict = spellTargetDict
+        conditionFound = True
     #write info and return the dict so whatever function called this knows about the update.
     writeInfo("characters", targetDict)
     return(targetDict, conditionFound)
@@ -1264,7 +1357,7 @@ def calc_damage(interaction: discord.Interaction, attacker: str, target: str, da
     #'Sanatise' inputs
     attacker = attacker.strip().lower()
     target = target.strip().lower()
-    damageDice[:] = [str(value) for value in damageDice if "d" in value]
+    damageDice[:] = [str(value) for value in damageDice]
     damageType[:] = [str(value) for value in damageType]
     contestDC = max(contestDC, 0)
     contestDCMod = max(contestDCMod, -contestDC)
@@ -1306,30 +1399,31 @@ def calc_damage(interaction: discord.Interaction, attacker: str, target: str, da
     if (advantage or disadvantage) and not (advantage and disadvantage) and rollToHitOverride == 0: alternateRollToHit = roll_dice(1, 20, bonusToHit)
     if advantage and not disadvantage: rollToHit, feedbackString = max(rollToHit, alternateRollToHit), feedbackString+"Advantage"
     if disadvantage and not advantage: rollToHit, feedbackString = min(rollToHit, alternateRollToHit), feedbackString+"Disadvantage"
-    print("^Roll to hit(s)^ Applying crits? " + str(applyCrits))
+    print("^Roll to hit(s)^")
     crit = True if rollToHit-bonusToHit==20 and not "crit" in targetDict["immunities"] and applyCrits else False
     saved = True if rollToHit<contestDC+contestDCMod and not crit else False
     if savedReversed: saved = not saved
     #Roll damage
     for index, dice in enumerate(damageDice):
-        diceCount = int(float(dice.split("d")[0]))
-        diceSides = int(float(dice.split("d")[1]))
-        if crit:
-            diceCount = diceCount*2
-            print("ATTACK CRIT")
+        if dice == "": continue #Empty dice damage
+        if len(damageType) <= 1: index = 0
+        diceCount = int(float(dice.split("d")[0])) if "d" in dice else 0
+        diceSides = int(float(dice.split("d")[1])) if "d" in dice else 0
+        if "d" not in dice: bonusToDmg += int(dice) #Flat amount
+        if crit: diceCount = diceCount*2
         damage = int(roll_dice(diceCount, diceSides, bonusToDmg))
+        print("calc_damage Info: ["+dice+"]Uncalculated (raw) damage is: " + str(int(damage))+str(damageType[index]).title())
         if bonusToDmg > 0: bonusToDmg = 0 #Apply dmg bonus once
         if saved and onSave == "miss": damage = damage*0
         elif saved and onSave == "half": damage = damage/2
         if damageType[index] in targetDict["immunities"]: damage = damage*0
         elif damageType[index] in targetDict["resistances"]: damage = damage/2
         elif damageType[index] in targetDict["vulnerabilities"]: damage = damage*2
-        damage = int(damage) #/2 May make it a float. Doing int() twice may give -1dmg compared to this.
         if damageType[index] == "healing": damage = damage*-1
-        print("Damage calculated to be: " + str(damage))
-        if damageType[index] in returnDamageTypes: returnDamages[returnDamageTypes.index(damageType[index])] += damage
+        print("calc_damage Info: ["+dice+"]Damage calculated to be: " + str(int(damage))+str(damageType[index]).title())
+        if damageType[index] in returnDamageTypes: returnDamages[returnDamageTypes.index(damageType[index])] += int(damage)
         elif damage != 0:
-            returnDamages.append(damage)
+            returnDamages.append(int(damage))
             returnDamageTypes.append(damageType[index])
     return(returnDamages, returnDamageTypes, rollToHit, saved, crit, feedbackString)
 
@@ -1344,6 +1438,7 @@ def apply_effects(interaction: discord.Interaction, target: str, damage: int, co
     spellFound, spellTargetFound = False, False
     spellDict, spellTargetDict = {}, {}
     concentratingSpellConditions = []
+    concentrationCheck = 0
     #Gain relevant information from the target
     targetDict, targetFound = getCharacterInfo(interaction, target)
     #Validate data
@@ -1355,18 +1450,24 @@ def apply_effects(interaction: discord.Interaction, target: str, damage: int, co
         targetDict["HPTemp"] = max(0, targetDict["HPTemp"] - damage)
         damage -= max(damage, targetDict["HPTemp"])
     targetDict["HPCurrent"] -= damage
-    targetDict["HPCurrent"] = min(targetDict["HPCurrent"], targetDict["HPMax"])
+    targetDict["HPCurrent"] = max(min(targetDict["HPCurrent"], targetDict["HPMax"]), 0)
     if targetDict["HPCurrent"] <= 0:
         feedbackString += "TargetZeroHP"
-        conditions.append("unconscious")
+        if "unconscious" not in targetDict["conditions"]: conditions.append("unconscious")
     #Apply conditions (and effects)
+    targetDict["HPTemp"] += sum(int(extra[12:]) for extra in extras if extra.startswith("applytemphp:"))
     for condition in conditions:
         if condition not in targetDict["immunities"]:
             targetDict["conditions"].append(condition)
             targetDict = apply_condition_effects(interaction, targetDict, condition)
     #Roll concentration check (if applicable)
     for condition in targetDict["conditions"]:
-        if condition.startswith("concentration") and ability_check(interaction, targetDict["name"], "CON", "None") < max(10, damage/2): targetDict = remove_logic(interaction, target, condition)
+        if condition.lower().startswith("concentration") and damage > 0:
+            concentrationCheck, _ = ability_check(interaction, targetDict["name"], "CON", "None")
+            if concentrationCheck < max(10, damage/2):
+                print("apply_effects Info: "+targetDict["name"]+" Failed concentration check ("+str(concentrationCheck)+"). Removing condition: "+condition)
+                feedbackString += "BrokenConcentration"
+                targetDict, _ = remove_logic(interaction, targetDict, condition)
     #Roll deathsaves (if applicable)
     if "DeathsaveSuccess" in extras: targetDict["deathSaves"] = str(int(targetDict["deathSaves"].split("|")[0])+1)+"|"+targetDict["deathSaves"].split("|")[1]
     if "DeathsaveFail" in extras: targetDict["deathSaves"] = targetDict["deathSaves"].split("|")[0]+"|"+str(int(targetDict["deathSaves"].split("|")[1])+1)
@@ -1446,13 +1547,17 @@ DONE ~~Bypass 'I Agree' to TOS & Privacy policy if already agreed.~~
 DONE ~~Sneak attack damage gets critted when roll to hit is => 20~~
 DONE ~~Fireball succ/fail damage is inverted~~ Generally improved saving throws for spells
 DONE ~~ADD DEVINE SMITE~~
-REJECTED ~~barbarian adv on death save~~ Tis is not a thing, DONE ~~Maybe: Give the unconcious condition upon reaching 0hp.~~
-Maneuvers for fighters
+REJECTED ~~barbarian adv on death save~~ This is not a thing, DONE ~~Maybe: Give the unconcious condition upon reaching 0hp.~~
+REJECTED ~~Maneuvers for fighters~~ System is not really made with this in mind, unfortunately. Many use positioning, others need saves, it's doable (as everything is,) but they would all need to be hardcoded (to a degree).
 DONE ~~Healing doesnt work~~
-Multiple user inputs for characters (not owners) on create encounter
-More validation on character creation.
+DONE ~~Multiple user inputs for characters (not owners) on create encounter~~ Also uses autocomplete for lists
+DONE ~~More validation on character creation.~~ Also more forgiving
 DONE ~~attacks with 'secondary attack' property can't be used as main attacks~~
 DONE ~~condition immunities~~
+DONE ~~Roll Initiative (when requested on create encounter)~~
+DONE ~~Reimplemented TempHP~~
+DONE ~~Check concentration checks~~
+DONE ~~/apply should use damage type~~
     """
 # Start the bot
 client.run("MY_TOKEN")
