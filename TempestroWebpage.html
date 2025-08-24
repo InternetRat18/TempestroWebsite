@@ -5,6 +5,9 @@
 <head>
 	<title>Tempestro Homepage</title>
 	<link rel="icon" href="Webpage/RedBlueD20Icon.png" type="image/png">
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Cinzel&family=IM+Fell+DW+Pica&family=Merriweather:wght@400;700&family=Uncial+Antiqua&display=swap" rel="stylesheet">
 </head>
 
 <body>
@@ -55,7 +58,7 @@
 	h2 {
 	text-align: center;
 	font-size: 28px;
-	font-family: Arial, Helvetica, sans-serif;
+	font-family: 'Cinzel', serif;
 	padding: 10px; 
 	background-color: #de2a29;
 	color: black; 
@@ -70,7 +73,7 @@
 	text-align-last: center;
 	line-height: 1; 
 	font-size: 24px;
-	font-family: Arial, Helvetica, sans-serif;
+	font-family: 'Cinzel', serif;
 	text-shadow: 1px 1px 2px rgba(255, 204, 150, 0.3);
 	color: black; 	
 	background-color: #119DA4;
@@ -87,8 +90,8 @@
 	text-align-last: center;
 	line-height: 1.5; 
 	font-size: 20px;
-	font-family: Arial, Helvetica, sans-serif;
-	text-shadow: 1px 1px 2px rgba(204, 85, 0, 0.5);
+	font-family: 'IM Fell DW Pica', serif;
+	text-shadow: 0px 0px 0px rgba(204, 85, 0, 0.5);
 	color: black; 	
 	background-color: #FFC857;
 	max-width: 900px;
@@ -133,6 +136,7 @@
 	}
 	.navLink:hover { transform: scale(1.05); }
 	.fineprint { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; }
+	.policyp { font-size: 18px;}
 </style>
 
 <h1>Tempestro#3438</h1>
@@ -150,29 +154,34 @@
 	<img src="Webpage/RedD20.png" alt="Red D20">
 </div>
 
-<h2>Player Guide</h2>
-<h3>About Tempestro</h3>
-<p>Tempestro is a custom-built Discord bot designed to streamline combat during Dungeons & Dragons (D&D) sessions, particularly for new players. Tempestro makes ordered combat, action tracking, attacking, casting spells, and special actions simple by using simple slash commands. To do this, it features automatic dice rolls, modifiers, damage calculations, condition tracking and more.<br><br>
-Even without extensive D&D knowledge, players benefit from the bot’s automation of common mechanics like advantage/disadvantage, hits/saves, crits and vulnerabilities. For Dungeon Masters, applying manual damage, healing and managing special conditions gives agency to include missing mechanics and players unwilling to use Tempestro.<br></p>
-<h3>Tempestro's Limitations</h3>
-<p>The one major combat element that Tempestro does not possess is a 'battle map'. Battlemaps provide players with an idea of their surroundings, enabling them to judge distances for attack range and movement. An implementation of this would be limiting and frustrating to set up and use as a player and DM. Instead, that responsibility lies on the players to determine who they can and can't attack, depending on their position within their world.<br><br>
-Another limitation is the number of content features Tempestro can take into account. It would be unrealistic to implement every feature and rule for every class within D&D; priorities will have to be made. Currently, my goal is to include as many features as I can within the official D&D Player’s Handbook and Dungeon Master's Guide. Other features would have to be manually calculated and inputted using commands such as /apply.<br></p>
-<h2>Development Process</h2>
-<h3>Design Philosophy</h3>
-<p>One of the most distinctive elements of the bot is its lack of strict restraints. Rather than restricting the player with rigid validations and vague error messages, the bot is designed to trust the player. When a command is entered incorrectly or imprecisely, the bot tries to interpret it anyway. Instead of simply failing, it offers guidance or partial results, giving the player the freedom to act without fear of breaking the system.<br><br>
-This approach makes Tempestro more like a helpful co-pilot than a referee. It supports the flow of combat rather than interrupting it and empowers users, especially players unfamiliar with automation tools. Instead, they are free to focus on decision-making rather than syntax or rule precision.<br></p>
-<h3>How Tempestro was Made</h3>
-<p>Tempestro was developed solo for personal use in D&D sessions. Tempestro uses Python 3.10 and Discord.py v2.4.0 and was created with lightweight, accessible tools such as Notepad and the Python IDLE shell. Simple CSV files were used for the database and a clear goal to make combat faster and more engaging for new and experienced players alike. Using the RAD development methodology, the project maintained an end-user-centered design and produced frequent prototypes.<br><br>
-From early versions, feedback was incorporated to refine commands, improve clarity, and add new features. Tempestro's development started on the 30th of May 2025, and it's currently in a stable state and will be continually and gradually improved and expanded over time.<br></p>
+<h2>Introducing Tempestro</h2>
+<h3>About Tempestro</h2>
+<p>Tempestro is a custom-built Discord bot designed to streamline combat during Dungeons & Dragons (D&D) sessions, particularly for lower-level adventures. Tempestro makes ordered combat, action tracking, attacking, casting spells, and special actions simple by making use of Discord's slash commands. To do this, it features automatic dice rolls, modifiers, damage calculations, condition tracking, saving throws and more.<br></p>
+<h3>Philosophy & Approach</h2>
+<p>Think of Tempestro as your co-pilot, not a referee. It's designed to support your game, not police it. It won't stop your fighter from channelling their inner magician to cast a fireball or prevent a monk from using a greataxe. The system trusts the user's choices, and it works to execute the commands it's given, allowing players the creative freedom to play without fear of constraints.<br></p>
+<h3>Features & Benefits</h2>
+<p>Even without extensive D&D knowledge, players benefit from the bot’s automation of common mechanics like advantage/disadvantage, hits/saves, crits and vulnerabilities/resistances. For Dungeon Masters, manual commands for applying damage, healing and special conditions give agency to include missing mechanics and players unwilling to use Tempestro.<br></p>
+<h2>Tempestro's Limitations</h2>
+<h3>DND Content</h3>
+<p>The first major limitation of Tempestro is the amount of content. DND is fundamentaly a game of imagination and as such not every feature of every class can be included in Tempestros calcuations. Fortunately, when attacking/casting manual modifiers to hit/damage and advantage overrides paired with applications of conditions using /apply can offer a workaround.<br></p>
+<h3>Battlemap</h3>
+<p>Tempestro also lacks a built-in battle map, which means it doesn't track player positions or account for potential obstacles. The Dungeon Master (DM) and/or players are therefore responsible for managing their position in their world to decide what actions and attacks are possible. Conditions and other effects that modify movement will be communicated to the player on turn start.<br></p>
+<h2>How Tempestro was Made</h3>
+<h3>Tempestro's Journey</h2>
+<p>Tempestro began its journey as a simple Discord dice roller, designed to make general tabletop rolls easier with the addition of modifiers. It then evolved to streamline D&D 5e combat by storing characters, spells, and attacks in simple CSV files, automatically executing weapon and spell attacks with the relevant dice and modifiers to give a Damage number as a result.<br></p>
+<h3>The Final Evolution</h2>
+<p>In its most recent and final evolution, Tempestro leverages a dedicated SQLite3 database to store its users' characters and encounters, allowing them to be saved independently. Within an encounter, the bot now manages a full turn order, initiative, comprehensive condition tracking, and necessary saving throws to correctly calculate the outcome of spells and abilities and factoring in every detail.<br></p>
+<h3>Tools Used in Development</h2>
+<p>This entire development process, from a simple roller to a full-featured combat companion, has been built using Python 3.10 and the discord.py 2.4.0 library, with all coding and editing done within the Python IDLE Shell. Tempestro uses SQLite3 for its database and relies on only a few additional Python modules, with a total of five: discord, random, time, math, and sqlite3.</p>
 <h2>Fine Print</h2>
 <div class="fineprint">
 	<div style="max-width: 460px; margin-top: 0px;">
 		<h3 class="policyh3" style="margin-top: 0px;">Privacy Policy</h3>
-		<p class="policyp">This bot does not collect or store any personal user data. It only processes messages and commands in real time to function within Discord servers and the only information processed is what users enter within Tempestro’s slash commands or direct messages. We do not retain user information outside of Discord. Discord may collect and store data according to its Privacy Policy. If you have any questions, contact me at <strong>TempestroBot@outlook.com</strong>.</p>
+		<p class="policyp">Tempestro Bot only collects the minimum data needed to function within Discord. This includes Discord User IDs (to link characters to their owners, preventing unauthorised actions), Guild IDs (to link encounters to the correct server), and any information you provide through slash commands or direct messages. Data is stored only for these purposes and never shared or sold. You may delete data linked to your UserID at any time by using /privacy_delete-me. Data is only accessible through Discord, stored locally in the bot’s database. Discord may also collect and store data according to its Privacy Policy. Any questions contact <strong>TempestroBot@outlook.com</strong>.</p>
 	</div>
 	<div style="max-width: 460px; margin-top: 0px;">
 		<h3 class="policyh3" style="margin-top: 0px;">Terms Of Service</h3>
-		<p class="policyp">Tempestro is a Discord bot designed to assist with Dungeons & Dragons (5e) combat by tracking turn order, actions, and calculating damage. Users interact with Tempestro through Discord’s slash commands and direct messages, providing seamless integration within the Discord platform. The bot is provided “as-is” without warranties, and by using it, you agree to use it responsibly and acknowledge that the creators are not liable for any errors or issues arising from its use.</p>
+		<p class="policyp">Tempestro is a Discord bot designed to assist with Dungeons & Dragons (5e) combat by tracking turn order, actions, and calculating damage. Users interact with Tempestro through Discord’s Slash Commands and Direct Messages. Data collection and storage is handled according to our Privacy Policy. By using Tempestro, you agree to use it responsibly (to not abuse, spam, or attempt to exploit the bot) and acknowledge that the bot is provided “as-is” without warranties of any kind. The creators are not liable for any errors, issues, or data loss arising from its use, and you remain responsible for complying with Discord’s Terms of Service and Community Guidelines.</p>
 	</div>
 </div>
 
