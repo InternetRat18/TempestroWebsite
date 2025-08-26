@@ -353,7 +353,7 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     spellRollToHit, spellAttackBonus, spellSaveDC, damageTotal, spellBonusToHit, spellBonusToDamage, spellRollToHitOverride, tempHPToApply = 0, 0, 0, 0, hit_modifier, damage_modifier, 0, 0
     targetDicts, spellDamages, spellDamageTypes, casterConditionsToApply, targetConditionsToApply = [], [], [], [], []
     spellCastingAbility, spellFeedbackString, applyEffectsFeedback, outputMessage, spellHitLine = "", "", "", "", ""
-    targetsList = str(targets+",").split(",")[:-1] #List of Strings
+    targetsList = [target.lower().strip() for target in str(targets+",").split(",")[:-1]] #List of Strings
     #Get info from the database
     casterDict, casterFound = getCharacterInfo(interaction, caster)
     spellDict, spellFound = getSpellInfo(spell)
@@ -424,7 +424,7 @@ async def cast(interaction: discord.Interaction, spell: str, targets: str, caste
     await encounter(interaction, "remove action", spellDict["castTime"], casterDict["name"])
 cast.autocomplete("spell")(autocomplete_spells)
 cast.autocomplete("caster")(autocomplete_characters)
-cast.autocomplete("targets")(autocomplete_characters)
+cast.autocomplete("targets")(autocomplete_characterList)
 
 # Slash command: /Attack
 @client.tree.command(name="attack", description="For all weapon attacks")
@@ -617,9 +617,11 @@ async def action(interaction: discord.Interaction, character: str, action: str, 
     #Action Hide
     elif action == "hide": #Make a stealth check and contest it with a passive perception on the target (if any)
         if targetFound:
-            if ability_check(interaction, characterDict["name"], "DEX", "Stealth") < ability_check(interaction, targetDict["name"], "WIS", "Perception", "None", True): saved = True
-        if not saved: apply_effects(interaction, character, 0, ["Hidden"])
-        await interaction.response.send_message(character.title() + ", you think you are hidden. " + ("✅ (You actually are)" if not saved else "❌ (You are NOT)"))
+            abilityCheck, abilityContestCheck = ability_check(interaction, characterDict["name"], "DEX", "Stealth")[0], ability_check(interaction, targetDict["name"], "WIS", "Perception", "None", True)[0]
+            if abilityCheck >= abilityContestCheck:
+                saved = False
+                apply_effects(interaction, character, 0, ["Hidden"])
+        await interaction.response.send_message(character.title() + ", you rolled a "+str(abilityCheck)+" and you think you are hidden " + ("(✅ You actually are)" if not saved else "(❌You are NOT)") + ".")
     #Action Dodge
     elif action == "dodge":
         apply_effects(interaction, target, 0, ["Dodging.1"])
@@ -778,7 +780,7 @@ async def create_character(interaction: discord.Interaction):
         profSelected = []
         for entry in entries:
             expertise = entry.upper().endswith("E")
-            num_part = entry[:-2] if expertise else entry
+            num_part = entry[:-1] if expertise else entry
             if num_part.isdigit():
                 idx = int(num_part) - 1
                 if 0 <= idx < len(skillsList):
@@ -819,7 +821,7 @@ async def create_character(interaction: discord.Interaction):
         #DEV LINE characterInfoList = name.split(",")
         characterInfoList = [name,ClassLevel,size,creatureType,race,rawStats,statMods,str(maxHp)+"|0|"+str(maxHp),str(Ac),str(speed),str(profBonus),proficiencies,savingThrows,"0|0",VunResImm,"None"]
         view = ConfirmCancelView()
-        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, it is encouraged to run a test attack before your encounter (making sure to /reset afterwards) if your attack doesnt reposnd its likey your character has incomplete/incorrect data.\nPlease confirm or cancel to complete your character creation:", view=view)
+        await dmChannel.send(":pencil: Here is your generated character line:\n```"+str(characterInfoList)+"```\nIf you are unsure weather this character line is correct, it is encouraged to run a test attack before your encounter (making sure to /reset afterwards) if your attack doesnt reposnd its likely your character has incomplete/incorrect data.\nPlease confirm or cancel to complete your character creation:", view=view)
         await view.wait()
         #If confirmed, write it in both files (saves user having to /reset for the character to work).
         if view.value:
@@ -940,11 +942,12 @@ async def create_encounter(interaction: discord.Interaction, character_owners: s
     charcterDict = {}
     characterFound = False
     #Roll initative and reorder 'characterList' + 'character_owners'
-    for character in characterList: initRolls.append(roll_dice(1, 20))
-    characterList[:] = [character for _, character in sorted(zip(initRolls, characterList))]
-    character_owners[:] = [owner for _, owner in sorted(zip(initRolls, character_owners))]
-    characterList.reverse()
-    character_owners.reverse()
+    if roll_initative:
+        for character in characterList: initRolls.append(roll_dice(1, 20))
+        characterList[:] = [character for _, character in sorted(zip(initRolls, characterList))]
+        character_owners[:] = [owner for _, owner in sorted(zip(initRolls, character_owners))]
+        characterList.reverse()
+        character_owners.reverse()
     #Find characters full names (and if they exist)
     for index, character in enumerate(characterList):
         characterDict, characterFound = getCharacterInfo(interaction, character)
@@ -974,7 +977,8 @@ async def encounter(interaction, command: str, info1=None, info2=None):
             DBCursor.execute(Query, (interaction.guild.id,))
             QueryResult = DBCursor.fetchone()
         guildIDPKey = QueryResult[0]
-        Query = "INSERT INTO encounters VALUES (?, ?, ?, ?, ?)"
+        try: Query = "INSERT INTO encounters VALUES (?, ?, ?, ?, ?)"
+        except Exception as e: await interaction.followup.send("This guild has an ongoing encoutner. Only one encounter can be active at once.")
         DBCursor.execute(Query, ([guildIDPKey, "|".join(info1), "|".join(info2), 0, "|".join([str("[1, 1, 1]") for character in info1])]))
         DBConnection.commit()
         DBConnection.close()
@@ -1035,7 +1039,7 @@ async def encounter(interaction, command: str, info1=None, info2=None):
         #Re-retrive the caracters info, and show their active conditions
         characterDict, characterFound = getCharacterInfo(interaction, encounterDict["characterOrder"][encounterDict["currentIndex"]])
         if not characterFound: print("encounter 'start turn' Error: Character could not be found for the 2nd time. Attemped to search for: " + str(encounterDict["characterOrder"][encounterDict["currentIndex"]]))
-        outputMessage += "\n:face_with_spiral_eyes: Your active conditions: " + str(characterDict["conditions"])
+        if str(characterDict["conditions"]).lower() != "['none']": outputMessage += "\n:face_with_spiral_eyes: Your active conditions: " + ",".join(characterDict["conditions"]) + "."
         #Update the encounter state with the action count and print the message
         encounterDict["actionsLeft"][encounterDict["currentIndex"]] = [actCount, bActCount, rActCount]
         writeEncounterInfo(interaction, encounterDict)
@@ -1082,8 +1086,7 @@ class ActionView(View):
         self.interaction = interaction
         for index, item in enumerate(self.children):
             if index != 3:
-                if encounterDict["actionsLeft"][encounterDict["currentIndex"]][index] <= 0:
-                    item.disabled = True
+                if encounterDict["actionsLeft"][encounterDict["currentIndex"]][index] <= 0: item.disabled = True
         
     async def on_timeout(self):
         try: message = await self.message.channel.fetch_message(self.message.id)
@@ -1127,9 +1130,10 @@ class ActionView(View):
 @app_commands.describe(target="The character you want to apply these effects to.",damage="The damage to apply to the target(0 for nothing, and negative for healing).",damage_type="The damage type of your damage, will apply Vul/Res/Imm. 'True' dmaage will ignore this.",condition="Condition you wish to apply to the target",condition_duration="how many turns should the condition last (leave blank for no duration)")
 @app_commands.choices(condition=[app_commands.Choice(name=cond, value=cond) for cond in ["Invisible", "Hidden", "Surprised", "Flanking", "Helped", "FaerieFire", "GuidingBolt", "Unaware", "Blinded", "Prone", "Poisoned", "Restrained", "Grappled", "Obscured", "Exhaustion3", "Silenced", "Dodging", "Cursed", "Paralyzed"][:25]],
                       damage_type=[app_commands.Choice(name=damage_type, value=damage_type) for damage_type in ["True", "Healing", "TempHP", "Bludgeoning", "Piercing", "Slashing", "Fire", "Cold", "Force", "Lightning", "Necrotic", "Poison", "Psychic", "Radient", "Thunder"]])
-async def apply(interaction: discord.Interaction, target: str, damage: int, damage_type: str, condition: str = "", condition_duration: int = 0):
+async def apply(interaction: discord.Interaction, target: str, damage: str, damage_type: str, condition: str = "", condition_duration: int = 0):
     #'Sanatise' User inputs
     target = target.strip().lower()
+    damage = [value.lower().strip() for value in str(damage+"+").split("+")[:-1]]
     damage_type = damage_type.strip().lower()
     condition = condition.strip().lower()
     condition_duration = max(0, condition_duration)
@@ -1145,20 +1149,18 @@ async def apply(interaction: discord.Interaction, target: str, damage: int, dama
     if not targetFound:
         await interaction.response.send_message("The target "+target.title()+" was not found, check input and try again.")
         return()
-    if damage < 0:
-        await interaction.response.send_message("Damage can not be less than zero. Healing can be done using the 'Healing' damage type.")
-        return()
     if condition == "" and condition_duration > 0:
         await interaction.response.send_message("Condition duration was entered without a condition. This does not compute.")
         return()
     #Calc damage (if applicable)
     if damage_type == "temphp": tempHpToApply, damage = damage, 0
-    elif damage_type != "true": damage = sum(calc_damage(interaction, targetDict["name"], targetDict["name"], [damage], [damage_type], 0, 0, 0, 0, "none", "none", False, 20)[0])
+    elif damage_type == "true": damage = sum(roll_dice(int(dice.split("d")[0]), int(dice.split("d")[1])) if "d" in dice else int(dice) for dice in damage)
+    else: damage = sum(calc_damage(interaction, targetDict["name"], targetDict["name"], damage, [damage_type], 0, 0, 0, 0, "none", "none", False, 20)[0])
     #Apply the effects
     if condition_duration <= 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition], ["ApplyTempHP:"+str(tempHpToApply)])
     elif condition_duration > 0: returnString = apply_effects(interaction, targetDict["name"], damage, [condition+"."+str(condition_duration)], ["ApplyTempHP:"+str(tempHpToApply)])
     #Format output
-    if damage_type == "healing": outputMessage += ":heart: " + target.title() + " was given " + str(damage) + damage_type.title() + "."
+    if damage_type == "healing": outputMessage += ":heart: " + target.title() + " was given " + str(damage*-1) + damage_type.title() + "."
     elif damage_type == "temphp": outputMessage += ":blue_heart: " + target.title() + " was given " + str(tempHpToApply) + damage_type.title() + "." 
     elif int(damage) >= 0: outputMessage += ":crossed_swords: " + target.title() + " has taken " + str(damage) + damage_type.title() + " damage."
     if condition != "":
@@ -1311,7 +1313,6 @@ def remove_logic(interaction: discord.Interaction, targetDict: dict, enteredCond
             conditionFound = True
     #Remove its effects
             apply_condition_effects(interaction, targetDict, condition, "-")
-    print("remove_logic Info: checking if "+condition+" startswith concentration")
     if enteredCondition.startswith("concentration"): #If were removing concentration, we also need to remove the spell effects
         concentratingSpell, concentratingSpellTarget = enteredCondition.split(":")[1].replace("|", " "), enteredCondition.split(":")[2].replace("|", " ")
         spellDict, spellFound = getSpellInfo(concentratingSpell) #Get the spell info
@@ -1320,7 +1321,6 @@ def remove_logic(interaction: discord.Interaction, targetDict: dict, enteredCond
         else: spellTargetDict = targetDict
         print("remove_logic Info: Removing "+condition+" and subconditions; "+str(concentratingSpellConditions))
         for cond in concentratingSpellConditions: #Remove the spells effects
-            print("remove_logic Info: Concentration Broken; attempting removal of: "+str(cond))
             if cond in str(spellTargetDict["conditions"]): #If not removed manualy
                 spellTargetDict["conditions"].remove(cond)
                 spellTargetDict = apply_condition_effects(interaction, spellTargetDict, cond, "-")
@@ -1445,8 +1445,7 @@ def apply_effects(interaction: discord.Interaction, target: str, damage: int, co
         print("apply_effects Error: Target not found. " + target)
         return()
     #Apply damage
-    if targetDict["HPTemp"] > 0 and damage > 0:
-        targetDict["HPTemp"], damage = max(0, targetDict["HPTemp"] - damage), max(0, damage-targetDict["HPTemp"])
+    if targetDict["HPTemp"] > 0 and damage > 0: targetDict["HPTemp"], damage = max(0, targetDict["HPTemp"] - damage), max(0, damage-targetDict["HPTemp"])
     targetDict["HPCurrent"] -= damage
     targetDict["HPCurrent"] = max(min(targetDict["HPCurrent"], targetDict["HPMax"]), 0)
     if targetDict["HPCurrent"] <= 0:
