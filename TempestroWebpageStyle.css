@@ -1,0 +1,220 @@
+/* ==== Global Colour Palette ====
+1: #891215 - OU Crimson
+2: #0D1C5D - Penn Blue
+3: #FFC857 - Sunglow
+4: #119DA4 - Dark Cyan
+5: #EF959D - Salmon Pink
+6: #976391 - Pomp and Power
+OLD COLOURS: G:#00FF80 R:#891215 B:#0d1c5d Y:#8B7500 O:#D37A11
+================================= */
+
+body {
+	background-image: linear-gradient(to right, #0d1c5d, #000000, #891215);
+	color: black;
+	font-family: Arial, Helvetica, sans-serif;
+	text-align: center;
+	margin: 0px;
+}
+
+/* ==== Headings ==== */
+h1 {
+	padding: 20px; 
+	background-color: #3772FF;
+	max-width: 900px; 
+	margin: 0px auto; 
+	border-radius: 10px;
+	border: 5px solid #0D1C5D;
+}
+h2 {
+	font-size: 28px;
+	padding: 10px; 
+	background-color: #de2a29;
+	max-width: 600px; 
+	margin: 20px auto; 
+	border-radius: 10px;
+	border: 5px solid #891215;
+}
+h3 {
+	line-height: 1; 
+	font-size: 24px;
+	text-shadow: 1px 1px 2px rgba(255, 204, 150, 0.3);
+	background-color: #119DA4;
+	max-width: 480px;
+	border-radius: 10px 10px 0px 0px;
+	border-bottom: 2px solid black;
+	padding: 10px;
+	margin: auto;
+}
+
+/* ==== Paragraphs ==== */
+p {
+	text-align: justify;
+	text-align-last: center;
+	line-height: 1.6; 
+	font-size: 20px;
+	text-shadow: 1px 1px 2px rgba(204, 85, 0, 0.5);
+	background-color: #FFC857;
+	max-width: 460px;
+	border-radius: 0px 0px 10px 10px;
+	padding: 20px;
+	margin: 0px auto; 
+}
+
+/* ==== Links ==== */
+a {
+	color: black;
+	font-size: 20px;
+	font-weight: bold;
+}
+
+/* ==== Navigation ==== */
+.navBar {
+	justify-content: center;
+	max-width: 910px;
+	background-color: #976391;
+	padding: 15px;
+	border-radius: 50px;
+	margin: 40px auto; 
+}
+.navContent {
+	display: flex;
+	gap: 40px;
+	align-items: center;
+}
+.navLink {
+	display: inline-block;
+	width: 225px;
+	background-color: #de2a29;
+	padding: 25px;
+	transition: transform 0.3s ease;
+	border-radius: 50px;
+	border: 5px solid #891215;
+}
+.navLink:hover { transform: scale(1.05); }
+
+/* ==== Images ==== */
+img {
+	display: block;
+	max-width: 300px;
+	max-height: 300px;
+	border-radius: 1000px;
+	border: 5px solid black;
+}
+
+.Pictures {
+	display: flex;
+	justify-content: center;
+	margin: 40px auto;
+	gap: 100px;
+}
+
+.CommandsTV {
+	justify-content: center;
+	border-radius: 0;
+	border: 0px solid black;
+	max-width: 740px;
+	max-height: none;
+	aspect-ratio: 74/39;
+	margin: auto;
+}
+.CommandsTVDial {
+	width: 54px;
+	height: 54px;
+	background-image: url(Webpage/RetroTVDial.png);
+	background-color: transparent;
+	background-repeat: no-repeat;
+	background-size: contain;
+	background-position: center;
+	display: inline;
+	position: relative;
+	padding: 0px;
+	border: 0px;
+	z-index: 1;
+}
+.CommandsTVDial1 {bottom: 379px; left: 359px;}
+.CommandsTVDial2 {bottom: 320px; left: 300px;}
+.CommandsTVVideo {
+	margin: auto;
+	position: relative;
+	bottom: 448px;
+}
+
+/* ==== Scrolls (HomePage) ==== */
+.ScrollGroup {
+	gap: 50px;
+	margin: auto;
+	display: inline-flex;
+}
+.ScrollBase {
+	max-height: 546px;
+	aspect-ratio: 5 / 7;
+	width: auto;
+	background-repeat: no-repeat;
+	background-size: cover;
+}
+.ScrollBase h3 {
+	text-align: center;
+	line-height: 1; 
+	font-size: 24px;
+	font-family: 'Cinzel', serif;
+	font-weight: bold;
+	text-shadow: 1px 1px 2px rgba(255, 204, 150, 0.3);
+	color: #FFD700; 	
+	max-width: 920px;
+	margin: 8.5px auto;
+	background-color: transparent;
+	padding: 0;
+	border-bottom: 0;
+}
+.ScrollBase p {
+	text-align: justify;
+	text-align-last: center;
+	line-height: 1.5; 
+	font-size: 20px;
+	font-family: 'IM Fell DW Pica', serif;
+	font-weight: lighter;
+	color: #FFD700;
+	background-color: transparent;
+	text-shadow: 0px 0px 0px rgba(204, 85, 0, 0.5);	
+	max-width: 900px;
+	border-radius: 0px 0px 10px 10px;
+	padding: 15px 60px;
+	margin: 0 auto;
+}
+.ScrollBlue {background-image: url(Webpage/ModernScrollBlue.png);}
+.ScrollRed {background-image: url(Webpage/ModernScrollRed.png);}
+
+
+/* ==== Video Section (Commads Page) ==== */
+video {
+	max-width: 647px;
+	width: 100%;
+	height: auto;
+	aspect-ratio: 16 / 9;
+	padding: 13px 79px 13px 14px;
+	display: block;
+
+/* ==== Fine Print / Policy (HomePage) ==== */
+.fineprint { 
+	display: flex; 
+	flex-wrap: wrap; 
+	justify-content: center; 
+	gap: 20px; 
+}
+.policyh3 {
+	font-weight: 600;
+	color: black; 
+	background-color: #119DA4;
+	border-radius: 10px 10px 0px 0px;
+	border-bottom: 2px solid black;
+	padding: 10px;
+	margin: 0;
+}
+.policyp {
+	font-weight: 500;
+	font-size: 16px;
+	color: black;
+	background-color: #FFC857;
+	padding: 20px;
+	margin: 0;
+}
